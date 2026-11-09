@@ -145,6 +145,9 @@ const CFG = {
   // --- data ---
   REST_HOSTS: ['https://api.binance.com', 'https://data-api.binance.vision'],
   WS_HOSTS:   ['wss://stream.binance.com:9443/ws', 'wss://data-stream.binance.vision/ws'],
+  // Binance USDⓈ-M Futures untuk emas/perak (XAUUSDT, XAGUSDT). Tidak ada mirror binance.vision untuk futures.
+  FUT_REST_HOSTS: ['https://fapi.binance.com'],
+  FUT_WS_HOSTS:   ['wss://fstream.binance.com/ws', 'wss://fstream.binance.com/market/ws'],
   KLINE_LIMIT: 500,          // jumlah candle histori
   MAX_CANDLES: 1000,
   MIN_CANDLES: 60,           // minimal candle close untuk analisis
@@ -222,7 +225,7 @@ const TF = {
 };
 
 const S = {
-  session:0, tf:'1h', raw:'', parsed:null, binSym:null, mode:'idle',
+  session:0, tf:'1h', raw:'', parsed:null, binSym:null, market:'spot', mode:'idle',
   candles:[], ctx:null, result:null, dec:2,
   lastMsgAt:0, lastAnalysisAt:0, lastLiveAt:0, liveTimer:null, reloadTimer:null, tvReady:null,
 };
@@ -253,15 +256,18 @@ const U = {
 const Sym = {
   CRYPTO_EX: new Set(['BINANCE','BINANCEUS','COINBASE','BYBIT','OKX','KUCOIN','BITSTAMP','KRAKEN','BITFINEX',
     'GEMINI','MEXC','GATEIO','BITGET','HTX','HUOBI','POLONIEX','BINGX','PHEMEX','BITMEX','WHITEBIT','CRYPTO','PIONEX']),
+  // Emas/perak dari bursa mana pun (OANDA:XAUUSD, FX:XAUUSD, TVC:GOLD, …) → perpetual Binance Futures
+  METALS: {XAUUSD:'XAUUSDT', XAUUSDT:'XAUUSDT', GOLD:'XAUUSDT', XAGUSD:'XAGUSDT', XAGUSDT:'XAGUSDT', SILVER:'XAGUSDT'},
   parse(raw){
     let ex='', tk=raw;
     const k=raw.indexOf(':'); if(k>=0){ ex=raw.slice(0,k); tk=raw.slice(k+1); }
     const clean=tk.replace(/\.P$/,'').replace(/PERP$/,'').replace(/[^A-Z0-9]/g,'');
+    if(Sym.METALS[clean]) return {raw,ex,tk:clean,crypto:true,market:'futures',cands:[Sym.METALS[clean]]};
     if(!clean || (ex && !Sym.CRYPTO_EX.has(ex))) return {raw,ex,tk:clean,crypto:false};
     const c=[clean];
     if(/USD$/.test(clean)) c.push(clean+'T');          // COINBASE:BTCUSD → BTCUSDT
     if(!/USDT$/.test(clean)) c.push(clean+'USDT');      // BTC → BTCUSDT
-    return {raw,ex,tk:clean,crypto:true,cands:[...new Set(c)]};
+    return {raw,ex,tk:clean,crypto:true,market:'spot',cands:[...new Set(c)]};
   },
 };
 
@@ -269,15 +275,19 @@ const Sym = {
    MODUL 4: DATA — REST klines + WebSocket kline stream, fallback & reconnect
    ===================================================================== */
 const Feed = {
-  restIdx:0, wsIdx:0, ws:null, retry:0, timer:null, watchdog:null, countdown:null,
+  restIdx:{spot:0,futures:0}, wsIdx:0, ws:null, retry:0, timer:null, watchdog:null, countdown:null,
+  // spot: /api/v3 (+ mirror binance.vision) · futures: /fapi/v1 untuk XAUUSDT/XAGUSDT
+  restHosts:(mk)=> mk==='futures' ? CFG.FUT_REST_HOSTS : CFG.REST_HOSTS,
+  wsHosts:(mk)=> mk==='futures' ? CFG.FUT_WS_HOSTS : CFG.WS_HOSTS,
 
-  async fetchKlines(sym, interval, limit=CFG.KLINE_LIMIT){
+  async fetchKlines(sym, interval, market='spot', limit=CFG.KLINE_LIMIT){
     let lastErr=null;
-    for(let t=0;t<CFG.REST_HOSTS.length;t++){
-      const idx=(Feed.restIdx+t)%CFG.REST_HOSTS.length, host=CFG.REST_HOSTS[idx];
+    const hosts=Feed.restHosts(market), path= market==='futures' ? '/fapi/v1/klines' : '/api/v3/klines';
+    for(let t=0;t<hosts.length;t++){
+      const idx=(Feed.restIdx[market]+t)%hosts.length, host=hosts[idx];
       const ctrl=new AbortController(), to=setTimeout(()=>ctrl.abort(),CFG.FETCH_TIMEOUT_MS);
       try{
-        const res=await fetch(`${host}/api/v3/klines?symbol=${sym}&interval=${interval}&limit=${limit}`,{signal:ctrl.signal,cache:'no-store'});
+        const res=await fetch(`${host}${path}?symbol=${sym}&interval=${interval}&limit=${limit}`,{signal:ctrl.signal,cache:'no-store'});
         clearTimeout(to);
         if(res.status===400){
           const j=await res.json().catch(()=>({}));
@@ -285,7 +295,7 @@ const Feed = {
         }
         if(!res.ok) throw new Error(`HTTP ${res.status} dari ${new URL(host).host}`);
         const data=await res.json();
-        Feed.restIdx=idx;
+        Feed.restIdx[market]=idx;
         const now=Date.now();
         return { host, candles: data.map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5],closed:k[6]<now})) };
       }catch(e){
@@ -297,9 +307,9 @@ const Feed = {
     throw lastErr || new Error('Semua host REST gagal');
   },
 
-  async resolve(cands, interval){
+  async resolve(cands, interval, market='spot'){
     for(const sym of cands){
-      try{ const r=await Feed.fetchKlines(sym, interval); return {sym, ...r}; }
+      try{ const r=await Feed.fetchKlines(sym, interval, market); return {sym, ...r}; }
       catch(e){ if(!e.invalidSymbol) throw e; }
     }
     const e=new Error('Tidak ada di Binance'); e.invalidSymbol=true; throw e;
@@ -308,7 +318,7 @@ const Feed = {
   connect(my){
     if(my!==S.session) return;
     Feed.closeSocket();
-    const host=CFG.WS_HOSTS[Feed.wsIdx], hostName=host.replace(/^wss:\/\//,'').split(/[:/]/)[0];
+    const hosts=Feed.wsHosts(S.market), host=hosts[Feed.wsIdx%hosts.length], hostName=host.replace(/^wss:\/\//,'').split(/[:/]/)[0];
     const url=`${host}/${S.binSym.toLowerCase()}@kline_${TF[S.tf].bn}`;
     UI.status('connecting',`Menghubungkan stream (${hostName})…`);
     let ws;
@@ -338,7 +348,7 @@ const Feed = {
   scheduleReconnect(my){
     clearTimeout(Feed.timer); clearInterval(Feed.countdown); clearTimeout(Feed.watchdog);
     Feed.retry++;
-    Feed.wsIdx=(Feed.wsIdx+1)%CFG.WS_HOSTS.length;   // gantian host tiap gagal
+    Feed.wsIdx=(Feed.wsIdx+1)%Feed.wsHosts(S.market).length;   // gantian host tiap gagal
     const delay=Math.min(CFG.RECONNECT_MAX_MS, CFG.RECONNECT_BASE_MS*2**(Feed.retry-1));
     let left=Math.ceil(delay/1000);
     const show=()=>UI.status('warn',`Stream terputus. Sambung ulang dalam ${left} dtk (percobaan ${Feed.retry})`);
@@ -349,7 +359,7 @@ const Feed = {
 
   async resync(my){
     try{
-      const r=await Feed.fetchKlines(S.binSym, TF[S.tf].bn);
+      const r=await Feed.fetchKlines(S.binSym, TF[S.tf].bn, S.market);
       if(my!==S.session) return;
       S.candles=r.candles; S.lastMsgAt=Date.now(); Engine.runFull();
     }catch(e){ /* stream tetap jalan; analisis memakai data yang ada */ }
@@ -360,7 +370,7 @@ const Feed = {
   },
   stop(){
     clearTimeout(Feed.timer); clearInterval(Feed.countdown); clearTimeout(Feed.watchdog);
-    Feed.closeSocket(); Feed.retry=0;
+    Feed.closeSocket(); Feed.retry=0; Feed.wsIdx=0;
   },
 };
 
@@ -1155,7 +1165,7 @@ const UI = {
       `Simbol yang dicoba: <span class="mono">${ps.cands.map(U.esc).join(', ')}</span>. Chart tetap tampil, tetapi analisis otomatis hanya untuk pasangan spot yang terdaftar di Binance.`);
   },
   renderLoading(raw){ UI.renderMessage('Memuat data…',`Mengambil histori candle untuk <span class="mono">${U.esc(raw)}</span> dari Binance.`); },
-  renderError(msg){ UI.renderMessage('Data gagal dimuat',`${U.esc(msg)}. Kedua host Binance tidak merespons; halaman akan mencoba lagi otomatis. Bila terus gagal, periksa koneksi atau apakah Binance diblokir di jaringan Anda.`); },
+  renderError(msg){ UI.renderMessage('Data gagal dimuat',`${U.esc(msg)}. Host Binance tidak merespons; halaman akan mencoba lagi otomatis. Bila terus gagal, periksa koneksi atau apakah Binance diblokir di jaringan Anda.`); },
 
   patCard(p,opt={}){
     const cls=p.dir>0?'bull':p.dir<0?'bear':'neut', lbl=p.dir>0?'BULLISH':p.dir<0?'BEARISH':'NETRAL';
@@ -1176,7 +1186,7 @@ const UI = {
     const srList=(arr)=> arr.length ? arr.map(l=>`${U.p(l.price)} <span class="muted">(${l.touches}×)</span>`).join('<br>') : '<span class="muted">tidak ada pivot</span>';
     const dirCls=d=>d>0?'up':d<0?'dn':'neu';
     const srcNote = (ps.ex && ps.ex!=='BINANCE') || ps.tk!==S.binSym
-      ? `<p class="note">Chart: <span class="mono">${U.esc(S.raw)}</span>. Analisis memakai data spot Binance <span class="mono">${U.esc(S.binSym)}</span>, harga bisa sedikit berbeda.</p>` : '';
+      ? `<p class="note">Chart: <span class="mono">${U.esc(S.raw)}</span>. Analisis memakai data ${S.market==='futures'?'perpetual futures':'spot'} Binance <span class="mono">${U.esc(S.binSym)}</span>, harga bisa sedikit berbeda.${S.market==='futures'?' Kontrak ini diperdagangkan 24/7, sedangkan pasar emas/perak tutup akhir pekan, jadi candle akhir pekan tidak ada di chart broker dan pola di periode itu kurang andal.':''}</p>` : '';
 
     UI.el.panel.innerHTML=`
     <div class="sec">
@@ -1247,7 +1257,7 @@ const App = {
     Feed.stop(); clearTimeout(S.reloadTimer); clearTimeout(S.liveTimer); S.liveTimer=null;
     Object.assign(S,{raw,candles:[],ctx:null,result:null,binSym:null,lastMsgAt:0,lastAnalysisAt:0});
     Chart.render(raw,S.tf);
-    const ps=Sym.parse(raw); S.parsed=ps;
+    const ps=Sym.parse(raw); S.parsed=ps; S.market=ps.market||'spot';
     if(!ps.crypto){ S.mode='off'; UI.renderNonCrypto(ps); UI.status('idle','Analisis nonaktif (bukan kripto Binance)'); return; }
     S.mode='loading'; UI.renderLoading(raw);
     App.load(my,ps);
@@ -1255,7 +1265,7 @@ const App = {
   async load(my,ps){
     UI.status('connecting','Memuat histori candle…');
     try{
-      const r=await Feed.resolve(ps.cands,TF[S.tf].bn);
+      const r=await Feed.resolve(ps.cands,TF[S.tf].bn,ps.market);
       if(my!==S.session) return;
       S.binSym=r.sym; S.candles=r.candles; S.mode='on'; S.lastMsgAt=Date.now();
       Engine.runFull();
