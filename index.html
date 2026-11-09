@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal Analisis Pola Candle</title>
+<style>
+:root{
+  --bg:#081017; --panel:#0c151e; --panel2:#101c27; --line:#1b2a38; --line2:#24384a;
+  --ink:#d6dee6; --muted:#7a8c9d; --dim:#4f6274;
+  --up:#26d39a; --up-bg:rgba(38,211,154,.10); --dn:#ff5b6e; --dn-bg:rgba(255,91,110,.10);
+  --neu:#e8b44a; --neu-bg:rgba(232,180,74,.10); --focus:#5fb4ff;
+  --mono:"JetBrains Mono","IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.5 var(--sans)}
+body{display:flex;flex-direction:column;min-height:100%}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+/* ---------- header ---------- */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{font-family:var(--mono);font-weight:700;font-size:14px;color:var(--ink);white-space:nowrap}
+.brand b{color:var(--up)}
+.sym{display:flex;gap:6px}
+.sym input{width:210px;padding:6px 10px;background:var(--bg);border:1px solid var(--line2);border-radius:4px;font-family:var(--mono);text-transform:uppercase}
+.sym button,.tf button{padding:6px 10px;background:var(--panel2);border:1px solid var(--line2);border-radius:4px;cursor:pointer}
+.sym button{background:#16324a;border-color:#22507a}
+.sym button:hover,.tf button:hover{border-color:var(--focus)}
+.tf{display:flex;gap:2px;flex-wrap:wrap}
+.tf button{font-family:var(--mono);padding:5px 9px;color:var(--muted)}
+.tf button.on{color:var(--bg);background:var(--ink);border-color:var(--ink)}
+.status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-left:auto}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--up);box-shadow:0 0 0 3px rgba(38,211,154,.18)}
+.dot.connecting,.dot.warn{background:var(--neu)}
+.dot.warn{animation:blink 1s steps(2) infinite}
+.dot.error{background:var(--dn)}
+@keyframes blink{50%{opacity:.25}}
+.upd{font-family:var(--mono);font-size:11px;color:var(--dim)}
+
+/* ---------- layout ---------- */
+main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 430px;min-height:0;height:calc(100vh - 52px)}
+.chart{position:relative;border-right:1px solid var(--line);min-height:0}
+#tvChart{position:absolute;inset:0}
+.chart-msg{display:flex;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:var(--muted)}
+.panel{overflow-y:auto;background:var(--panel);min-height:0}
+@media (max-width:960px){
+  main{grid-template-columns:1fr;height:auto}
+  .chart{height:62vh;border-right:0;border-bottom:1px solid var(--line)}
+  .panel{overflow:visible}
+  .status{margin-left:0}
+  .sym input{width:170px}
+}
+
+/* ---------- panel ---------- */
+.sec{padding:12px 14px;border-bottom:1px solid var(--line)}
+.sec h2{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em}
+.sec h2 small{font-weight:400;color:var(--dim)}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)} .up{color:var(--up)} .dn{color:var(--dn)} .neu{color:var(--neu)}
+.note{font-size:12px;color:var(--muted)}
+.empty{font-size:12px;color:var(--dim);padding:4px 0}
+
+/* bias meter: elemen utama panel */
+.bias{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.bias .lbl{font-size:26px;font-weight:700;letter-spacing:-.01em}
+.bias .val{font-family:var(--mono);font-size:15px}
+.meter{position:relative;height:10px;margin:10px 0 4px;border-radius:5px;background:linear-gradient(90deg,var(--dn) 0%,#5a2a33 42%,#2b3440 50%,#1f4b3d 58%,var(--up) 100%)}
+.meter i{position:absolute;top:-4px;width:3px;height:18px;background:var(--ink);border-radius:2px;transform:translateX(-50%);transition:left .4s ease}
+.meter-scale{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--dim)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin-top:10px;font-size:12px}
+.kv dt{color:var(--muted)} .kv dd{margin:0;font-family:var(--mono)}
+ul.list{margin:6px 0 0;padding-left:16px} ul.list li{margin:2px 0}
+
+/* live */
+.live-px{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.live-px .px{font-family:var(--mono);font-size:22px;font-weight:700}
+.ohlc{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px}
+
+/* kartu pola */
+details.pat{border:1px solid var(--line);border-left:3px solid var(--dim);border-radius:4px;margin:6px 0;background:var(--panel2)}
+details.pat.bull{border-left-color:var(--up)} details.pat.bear{border-left-color:var(--dn)} details.pat.neut{border-left-color:var(--neu)}
+details.pat summary{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;list-style:none}
+details.pat summary::-webkit-details-marker{display:none}
+.tag{font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:3px}
+.bull .tag{color:var(--up);background:var(--up-bg)} .bear .tag{color:var(--dn);background:var(--dn-bg)} .neut .tag{color:var(--neu);background:var(--neu-bg)}
+.tag.tmp{color:var(--ink);background:#2a3846}
+.pname{font-weight:600;flex:1}
+.pscore{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.pbody{padding:0 10px 9px;font-size:12px}
+.pmeta{color:var(--muted);font-size:11px}
+.bar{height:3px;background:var(--line);margin:6px 0;border-radius:2px;overflow:hidden}
+.bar i{display:block;height:100%}
+.bull .bar i{background:var(--up)} .bear .bar i{background:var(--dn)} .neut .bar i{background:var(--neu)}
+.pbody ul{margin:4px 0 6px;padding-left:16px} .pbody li{margin:1px 0}
+.lv{margin-top:2px} .lv b{display:inline-block;min-width:76px;font-weight:600;color:var(--muted)}
+
+/* tabel konteks */
+table.ctx{width:100%;border-collapse:collapse;font-size:12px}
+table.ctx td{padding:5px 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.ctx td:first-child{color:var(--muted);width:92px;padding-right:8px}
+.sr{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+.sr div{font-family:var(--mono);font-size:12px}
+.sr h3{margin:0 0 3px;font:600 11px var(--sans);color:var(--muted)}
+
+.msg{padding:18px 14px}
+.msg h2{font-size:15px;margin:0 0 8px}
+.disc{padding:12px 14px;font-size:11px;color:var(--dim)}
+@media (prefers-reduced-motion:reduce){.meter i{transition:none}.dot.warn{animation:none}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">rdn<b>/</b>trade</div>
+  <div class="sym">
+    <input id="symInput" list="symList" value="BINANCE:BTCUSDT" spellcheck="false" aria-label="Simbol (BURSA:SIMBOL)">
+    <button id="symBtn" type="button">Terapkan</button>
+  </div>
+  <datalist id="symList">
+    <option value="BINANCE:BTCUSDT"><option value="BINANCE:ETHUSDT"><option value="BINANCE:SOLUSDT">
+    <option value="BINANCE:BNBUSDT"><option value="BINANCE:XRPUSDT"><option value="BINANCE:DOGEUSDT">
+    <option value="IDX:BBCA"><option value="IDX:TLKM"><option value="NASDAQ:AAPL">
+    <option value="FX:EURUSD"><option value="OANDA:XAUUSD"><option value="SP:SPX">
+  </datalist>
+  <div class="tf" id="tfBar" role="group" aria-label="Timeframe"></div>
+  <div class="status" role="status" aria-live="polite"><span id="stDot" class="dot"></span><span id="stText">Memulai…</span></div>
+  <div class="upd" id="updText">Update: –</div>
+</header>
+
+<main>
+  <section class="chart"><div id="tvChart"></div></section>
+  <aside class="panel" id="panel" aria-label="Panel analisis"></aside>
+</main>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   MODUL 1: KONFIGURASI — semua ambang deteksi bisa diubah di sini
+   ===================================================================== */
+const CFG = {
+  // --- data ---
+  REST_HOSTS: ['https://api.binance.com', 'https://data-api.binance.vision'],
+  WS_HOSTS:   ['wss://stream.binance.com:9443/ws', 'wss://data-stream.binance.vision/ws'],
+  KLINE_LIMIT: 500,          // jumlah candle histori
+  MAX_CANDLES: 1000,
+  MIN_CANDLES: 60,           // minimal candle close untuk analisis
+  FETCH_TIMEOUT_MS: 8000,
+  RELOAD_MS: 10000,          // jeda coba ulang REST bila semua host gagal
+  WS_STALE_MS: 90000,        // tanpa pesan selama ini → reconnect
+  RECONNECT_BASE_MS: 1000, RECONNECT_MAX_MS: 30000,
+  LIVE_THROTTLE_MS: 1000,    // analisis candle berjalan maks 1×/detik
+
+  // --- indikator ---
+  EMA_FAST: 20, EMA_MID: 50, EMA_SLOW: 200,
+  RSI_LEN: 14, RSI_OB: 70, RSI_OS: 30,
+  MACD_FAST: 12, MACD_SLOW: 26, MACD_SIGNAL: 9, MACD_CROSS_BARS: 3,
+  ATR_LEN: 14, VOL_LEN: 20,
+  VOL_HIGH: 1.5, VOL_VERY_HIGH: 2.0, VOL_LOW: 0.7,
+
+  // --- konteks tren sebelum pola candle ---
+  TREND_LOOKBACK: 5,         // candle sebelum pola
+  TREND_MIN_ATR: 1.0,        // perubahan close ≥ 1×ATR → dianggap tren
+  MIN_RANGE_ATR: 0.25,       // candle dengan range < 0,25×ATR diabaikan (noise)
+
+  // --- pola candlestick ---
+  DOJI_BODY_MAX: 0.10,               // body ≤ 10% range
+  DOJI_LONG_SHADOW_MIN: 0.60,        // dragonfly/gravestone: shadow panjang ≥ 60% range
+  DOJI_SHORT_SHADOW_MAX: 0.10,       // shadow lawan ≤ 10% range
+  DOJI_LONGLEG_SHADOW_MIN: 0.30,     // long-legged: kedua shadow ≥ 30% range
+  DOJI_LONGLEG_RANGE_ATR: 1.0,       // dan range ≥ 1×ATR
+  HAMMER_BODY_MAX: 0.35,             // body ≤ 35% range
+  HAMMER_SHADOW_RATIO: 2.0,          // shadow panjang ≥ 2× body
+  HAMMER_OPP_SHADOW_MAX: 0.10,       // shadow lawan ≤ 10% range
+  MARUBOZU_BODY_MIN: 0.90, MARUBOZU_RANGE_ATR: 0.8,
+  LONG_BODY_PCT: 0.50, LONG_BODY_ATR: 0.6,   // definisi "candle besar"
+  ENGULF_MIN_RATIO: 1.0, ENGULF_PREV_MIN_ATR: 0.2,
+  HARAMI_MAX_RATIO: 0.5,
+  PIERCE_MIN_PEN: 0.5,               // piercing/dark cloud: tembus ≥ 50% body
+  TWEEZER_TOL_ATR: 0.05,
+  STAR_BODY_MAX_RATIO: 0.3, STAR_PEN_MIN: 0.5, STAR_GAP_TOL: 0.1,
+  SOLDIER_BODY_MIN: 0.6, SOLDIER_SHADOW_MAX: 0.25, SOLDIER_BODY_ATR: 0.4,
+  CANDLE_SCAN: 8,            // pola dicari di 8 candle close terakhir
+  AGE_DECAY: 0.85,           // bobot pola berkurang 15% per candle umur
+
+  // --- pivot & pola chart ---
+  PIVOT_LEN: 5,              // swing high/low: ekstrem dalam ±5 candle
+  CHART_LOOKBACK: 150,
+  BREAK_MAX_AGE: 20,         // breakout lebih tua dari ini → pola dianggap selesai
+  DOUBLE_TOL_ATR: 0.5, DOUBLE_MIN_BARS: 8, DOUBLE_MAX_BARS: 100, DOUBLE_MIN_DEPTH_ATR: 1.5,
+  HS_HEAD_MIN_ATR: 0.5, HS_SHOULDER_TOL_ATR: 1.0,
+  TL_PIVOTS: 3, TL_MIN_SPAN: 15,
+  TL_FLAT_SLOPE_ATR: 0.02,   // |kemiringan| ≤ 0,02 ATR/candle → datar
+  TL_MAX_DEV_ATR: 0.6,       // pivot maks 0,6 ATR dari garis regresi
+  TL_CONVERGE_RATIO: 0.75,   // lebar akhir < 75% lebar awal → menyempit
+  TL_PARALLEL_TOL_ATR: 0.015,
+  TL_CONTAIN_MAX_VIOL: 0.10,
+  POLE_MAX_BARS: 10, POLE_MIN_ATR: 3.0,
+  FLAG_MIN_BARS: 5, FLAG_MAX_BARS: 20, FLAG_MAX_RETRACE: 0.5, PENNANT_CONVERGE: 0.6,
+
+  // --- support/resistance & divergensi ---
+  SR_LOOKBACK: 300, SR_CLUSTER_ATR: 0.5, SR_NEAR_ATR: 0.5, SR_MAX_LEVELS: 3,
+  DIV_LOOKBACK: 60, DIV_MIN_BARS: 5, DIV_MIN_RSI: 3, DIV_MAX_AGE: 15,
+
+  // --- skoring bias ---
+  BIAS_THRESHOLD: 15,        // |skor| > 15 → bullish/bearish
+  W_TREND: 1.5, W_STRUCT: 1.2, W_MOMENTUM: 0.8, W_DIV: 1.2, W_CANDLE: 1.0, W_CHART: 1.3,
+  CONFLICT_MIN: 25,
+};
+
+const TF = {
+  '1m': {tv:'1',   bn:'1m', ms:60e3},
+  '5m': {tv:'5',   bn:'5m', ms:300e3},
+  '15m':{tv:'15',  bn:'15m',ms:900e3},
+  '1h': {tv:'60',  bn:'1h', ms:3600e3},
+  '4h': {tv:'240', bn:'4h', ms:14400e3},
+  '1D': {tv:'D',   bn:'1d', ms:864e5},
+  '1W': {tv:'W',   bn:'1w', ms:6048e5},
+};
+
+const S = {
+  session:0, tf:'1h', raw:'', parsed:null, binSym:null, mode:'idle',
+  candles:[], ctx:null, result:null, dec:2,
+  lastMsgAt:0, lastAnalysisAt:0, lastLiveAt:0, liveTimer:null, reloadTimer:null, tvReady:null,
+};
+
+/* =====================================================================
+   MODUL 2: UTILITAS FORMAT
+   ===================================================================== */
+const U = {
+  _nf:{},
+  clamp:(x,a,b)=>Math.max(a,Math.min(b,x)),
+  esc:(s)=>String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),
+  nf(d){ return U._nf[d] || (U._nf[d]=new Intl.NumberFormat('id-ID',{minimumFractionDigits:d,maximumFractionDigits:d})); },
+  n(x,d=1){ return (x==null||!isFinite(x)) ? '–' : U.nf(d).format(x); },
+  p(x){ return U.n(x,S.dec); },
+  pct(x,d=0){ return (x==null||!isFinite(x)) ? '–' : U.n(x*100,d)+'%'; },
+  priceDec(x){ const a=Math.abs(x); return a>=1000?2 : a>=10?3 : a>=1?4 : a>=0.01?5 : 8; },
+  time(t){
+    const daily = S.tf==='1D'||S.tf==='1W';
+    return new Date(t).toLocaleString('id-ID', daily ? {day:'2-digit',month:'short',year:'numeric'} : {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+  },
+  clock(t){ return t ? new Date(t).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '–'; },
+  dirWord(d){ return d>0?'bullish':d<0?'bearish':'netral'; },
+};
+
+/* =====================================================================
+   MODUL 3: SIMBOL — menentukan apakah simbol bisa dianalisis via Binance
+   ===================================================================== */
+const Sym = {
+  CRYPTO_EX: new Set(['BINANCE','BINANCEUS','COINBASE','BYBIT','OKX','KUCOIN','BITSTAMP','KRAKEN','BITFINEX',
+    'GEMINI','MEXC','GATEIO','BITGET','HTX','HUOBI','POLONIEX','BINGX','PHEMEX','BITMEX','WHITEBIT','CRYPTO','PIONEX']),
+  parse(raw){
+    let ex='', tk=raw;
+    const k=raw.indexOf(':'); if(k>=0){ ex=raw.slice(0,k); tk=raw.slice(k+1); }
+    const clean=tk.replace(/\.P$/,'').replace(/PERP$/,'').replace(/[^A-Z0-9]/g,'');
+    if(!clean || (ex && !Sym.CRYPTO_EX.has(ex))) return {raw,ex,tk:clean,crypto:false};
+    const c=[clean];
+    if(/USD$/.test(clean)) c.push(clean+'T');          // COINBASE:BTCUSD → BTCUSDT
+    if(!/USDT$/.test(clean)) c.push(clean+'USDT');      // BTC → BTCUSDT
+    return {raw,ex,tk:clean,crypto:true,cands:[...new Set(c)]};
+  },
+};
+
+/* =====================================================================
+   MODUL 4: DATA — REST klines + WebSocket kline stream, fallback & reconnect
+   ===================================================================== */
+const Feed = {
+  restIdx:0, wsIdx:0, ws:null, retry:0, timer:null, watchdog:null, countdown:null,
+
+  async fetchKlines(sym, interval, limit=CFG.KLINE_LIMIT){
+    let lastErr=null;
+    for(let t=0;t<CFG.REST_HOSTS.length;t++){
+      const idx=(Feed.restIdx+t)%CFG.REST_HOSTS.length, host=CFG.REST_HOSTS[idx];
+      const ctrl=new AbortController(), to=setTimeout(()=>ctrl.abort(),CFG.FETCH_TIMEOUT_MS);
+      try{
+        const res=await fetch(`${host}/api/v3/klines?symbol=${sym}&interval=${interval}&limit=${limit}`,{signal:ctrl.signal,cache:'no-store'});
+        clearTimeout(to);
+        if(res.status===400){
+          const j=await res.json().catch(()=>({}));
+          const e=new Error(j.msg||'Simbol tidak valid'); e.invalidSymbol=true; throw e;
+        }
+        if(!res.ok) throw new Error(`HTTP ${res.status} dari ${new URL(host).host}`);
+        const data=await res.json();
+        Feed.restIdx=idx;
+        const now=Date.now();
+        return { host, candles: data.map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5],closed:k[6]<now})) };
+      }catch(e){
+        clearTimeout(to);
+        if(e.invalidSymbol) throw e;
+        lastErr = e.name==='AbortError' ? new Error(`Timeout ke ${new URL(host).host}`) : e;
+      }
+    }
+    throw lastErr || new Error('Semua host REST gagal');
+  },
+
+  async resolve(cands, interval){
+    for(const sym of cands){
+      try{ const r=await Feed.fetchKlines(sym, interval); return {sym, ...r}; }
+      catch(e){ if(!e.invalidSymbol) throw e; }
+    }
+    const e=new Error('Tidak ada di Binance'); e.invalidSymbol=true; throw e;
+  },
+
+  connect(my){
+    if(my!==S.session) return;
+    Feed.closeSocket();
+    const host=CFG.WS_HOSTS[Feed.wsIdx], hostName=host.replace(/^wss:\/\//,'').split(/[:/]/)[0];
+    const url=`${host}/${S.binSym.toLowerCase()}@kline_${TF[S.tf].bn}`;
+    UI.status('connecting',`Menghubungkan stream (${hostName})…`);
+    let ws;
+    try{ ws=new WebSocket(url); }catch(e){ Feed.scheduleReconnect(my); return; }
+    Feed.ws=ws;
+    ws.onopen=()=>{
+      if(my!==S.session){ ws.close(); return; }
+      const wasRetry=Feed.retry>0; Feed.retry=0;
+      UI.status('ok',`Realtime · ${hostName}`);
+      Feed.arm(my);
+      if(wasRetry) Feed.resync(my);   // isi celah candle selama terputus
+    };
+    ws.onmessage=(ev)=>{
+      if(my!==S.session) return;
+      Feed.arm(my);
+      try{ const m=JSON.parse(ev.data); if(m && m.k) Engine.onKline(m.k); }catch(_){}
+    };
+    ws.onclose=()=>{ if(my===S.session && Feed.ws===ws) Feed.scheduleReconnect(my); };
+    ws.onerror=()=>{ /* ditangani oleh onclose */ };
+  },
+
+  arm(my){
+    clearTimeout(Feed.watchdog);
+    Feed.watchdog=setTimeout(()=>{ if(my===S.session && Feed.ws){ try{Feed.ws.close();}catch(_){} } }, CFG.WS_STALE_MS);
+  },
+
+  scheduleReconnect(my){
+    clearTimeout(Feed.timer); clearInterval(Feed.countdown); clearTimeout(Feed.watchdog);
+    Feed.retry++;
+    Feed.wsIdx=(Feed.wsIdx+1)%CFG.WS_HOSTS.length;   // gantian host tiap gagal
+    const delay=Math.min(CFG.RECONNECT_MAX_MS, CFG.RECONNECT_BASE_MS*2**(Feed.retry-1));
+    let left=Math.ceil(delay/1000);
+    const show=()=>UI.status('warn',`Stream terputus. Sambung ulang dalam ${left} dtk (percobaan ${Feed.retry})`);
+    show();
+    Feed.countdown=setInterval(()=>{ left=Math.max(0,left-1); show(); },1000);
+    Feed.timer=setTimeout(()=>{ clearInterval(Feed.countdown); Feed.connect(my); }, delay);
+  },
+
+  async resync(my){
+    try{
+      const r=await Feed.fetchKlines(S.binSym, TF[S.tf].bn);
+      if(my!==S.session) return;
+      S.candles=r.candles; S.lastMsgAt=Date.now(); Engine.runFull();
+    }catch(e){ /* stream tetap jalan; analisis memakai data yang ada */ }
+  },
+
+  closeSocket(){
+    if(Feed.ws){ const w=Feed.ws; Feed.ws=null; w.onopen=w.onmessage=w.onclose=w.onerror=null; try{w.close();}catch(_){} }
+  },
+  stop(){
+    clearTimeout(Feed.timer); clearInterval(Feed.countdown); clearTimeout(Feed.watchdog);
+    Feed.closeSocket(); Feed.retry=0;
+  },
+};
+
+/* =====================================================================
+   MODUL 5: INDIKATOR
+   ===================================================================== */
+const Ind = {
+  // EMA: seed = SMA p nilai pertama, lalu EMA_t = x_t·k + EMA_{t-1}·(1−k), k = 2/(p+1)
+  ema(vals,p){
+    const out=new Array(vals.length).fill(null);
+    const start=vals.findIndex(v=>v!=null);
+    if(start<0 || vals.length-start<p) return out;
+    let s=0; for(let i=start;i<start+p;i++) s+=vals[i];
+    let e=s/p; out[start+p-1]=e; const k=2/(p+1);
+    for(let i=start+p;i<vals.length;i++){ e=vals[i]*k+e*(1-k); out[i]=e; }
+    return out;
+  },
+  // RSI Wilder: avgGain/avgLoss dihaluskan (avg·(p−1)+nilai)/p; RSI = 100 − 100/(1+RS)
+  rsi(cl,p){
+    const out=new Array(cl.length).fill(null); if(cl.length<=p) return out;
+    let g=0,l=0;
+    for(let i=1;i<=p;i++){ const d=cl[i]-cl[i-1]; if(d>0) g+=d; else l-=d; }
+    g/=p; l/=p; out[p]= l===0?100:100-100/(1+g/l);
+    for(let i=p+1;i<cl.length;i++){
+      const d=cl[i]-cl[i-1];
+      g=(g*(p-1)+Math.max(d,0))/p; l=(l*(p-1)+Math.max(-d,0))/p;
+      out[i]= l===0?100:100-100/(1+g/l);
+    }
+    return out;
+  },
+  // MACD = EMA12 − EMA26; signal = EMA9(MACD); histogram = MACD − signal
+  macd(cl,f,s,g){
+    const ef=Ind.ema(cl,f), es=Ind.ema(cl,s);
+    const line=cl.map((_,i)=> ef[i]!=null&&es[i]!=null ? ef[i]-es[i] : null);
+    const signal=Ind.ema(line,g);
+    const hist=line.map((v,i)=> v!=null&&signal[i]!=null ? v-signal[i] : null);
+    return {line,signal,hist};
+  },
+  // ATR Wilder: TR = max(H−L, |H−C₋₁|, |L−C₋₁|), dihaluskan seperti RSI
+  atr(c,p){
+    const n=c.length, out=new Array(n).fill(null); if(n<=p) return out;
+    const tr=c.map((x,i)=> i===0 ? x.h-x.l : Math.max(x.h-x.l, Math.abs(x.h-c[i-1].c), Math.abs(x.l-c[i-1].c)));
+    let a=0; for(let i=1;i<=p;i++) a+=tr[i]; a/=p; out[p]=a;
+    for(let i=p+1;i<n;i++){ a=(a*(p-1)+tr[i])/p; out[i]=a; }
+    return out;
+  },
+  // rata-rata volume p candle SEBELUM candle i (candle i tidak ikut dirata-rata)
+  volAvg(c,p){
+    const n=c.length, out=new Array(n).fill(null); let s=0;
+    for(let i=0;i<n;i++){ if(i>=p) out[i]=s/p; s+=c[i].v; if(i>=p) s-=c[i-p].v; }
+    return out;
+  },
+  // Pivot: high[i] > semua high dalam ±L candle (sama nilai → yang paling kanan dipakai).
+  // Pivot baru terkonfirmasi setelah L candle berikutnya close.
+  pivots(c,L){
+    const highs=[], lows=[];
+    for(let i=L;i<c.length-L;i++){
+      let isH=true, isL=true;
+      for(let j=i-L;j<=i+L;j++){
+        if(j===i) continue;
+        if(c[j].h>c[i].h || (j>i && c[j].h===c[i].h)) isH=false;
+        if(c[j].l<c[i].l || (j>i && c[j].l===c[i].l)) isL=false;
+        if(!isH && !isL) break;
+      }
+      if(isH) highs.push({i,p:c[i].h});
+      if(isL) lows.push({i,p:c[i].l});
+    }
+    return {highs,lows};
+  },
+};
+
+function buildCtx(candles){
+  const closes=candles.map(x=>x.c);
+  return {
+    c:candles, n:candles.length, closes,
+    ema20:Ind.ema(closes,CFG.EMA_FAST), ema50:Ind.ema(closes,CFG.EMA_MID), ema200:Ind.ema(closes,CFG.EMA_SLOW),
+    rsi:Ind.rsi(closes,CFG.RSI_LEN),
+    macd:Ind.macd(closes,CFG.MACD_FAST,CFG.MACD_SLOW,CFG.MACD_SIGNAL),
+    atr:Ind.atr(candles,CFG.ATR_LEN),
+    volAvg:Ind.volAvg(candles,CFG.VOL_LEN),
+    piv:Ind.pivots(candles,CFG.PIVOT_LEN),
+    sr:null,
+  };
+}
+
+/* =====================================================================
+   MODUL 6: KONTEKS — tren, struktur, S/R, RSI, MACD, volume, ATR, divergensi
+   ===================================================================== */
+const CX = {
+  // Tren pendek sebelum indeks i: perubahan close N candle dalam satuan ATR
+  priorTrend(ctx,i){
+    const N=CFG.TREND_LOOKBACK, e=i-1, s=e-N;
+    if(s<0) return {dir:0,move:0,ups:0,downs:0};
+    const a=ctx.atr[e]; if(!a) return {dir:0,move:0,ups:0,downs:0};
+    const move=(ctx.c[e].c-ctx.c[s].c)/a;
+    let ups=0,downs=0;
+    for(let k=s+1;k<=e;k++){ if(ctx.c[k].c<ctx.c[k-1].c) downs++; else if(ctx.c[k].c>ctx.c[k-1].c) ups++; }
+    const dir = move<=-CFG.TREND_MIN_ATR ? -1 : move>=CFG.TREND_MIN_ATR ? 1 : 0;
+    return {dir,move,ups,downs};
+  },
+  trendText(tr){
+    const N=CFG.TREND_LOOKBACK;
+    if(tr.dir<0) return `muncul setelah ${tr.downs} dari ${N} candle turun (turun ${U.n(-tr.move,1)}× ATR)`;
+    if(tr.dir>0) return `muncul setelah ${tr.ups} dari ${N} candle naik (naik ${U.n(tr.move,1)}× ATR)`;
+    return `tanpa tren jelas sebelumnya (perubahan ${U.n(tr.move,1)}× ATR dalam ${N} candle)`;
+  },
+
+  // Tren EMA: skor = Σ (harga>EMA20, EMA20>EMA50, EMA50>EMA200) bernilai ±1
+  trend(ctx){
+    const i=ctx.n-1, px=ctx.c[i].c, e20=ctx.ema20[i], e50=ctx.ema50[i], e200=ctx.ema200[i];
+    if(e20==null||e50==null) return {dir:0,strength:0,label:'data kurang',e20,e50,e200,px};
+    let s=(px>e20?1:-1)+(e20>e50?1:-1), max=2;
+    if(e200!=null){ s+=(e50>e200?1:-1); max=3; }
+    const frac=s/max, dir=Math.sign(frac);
+    const label = frac===1?'naik kuat' : frac===-1?'turun kuat' : frac>0?'condong naik' : frac<0?'condong turun' : 'campuran';
+    return {dir,strength:Math.round(Math.abs(frac)*80),label,e20,e50,e200,px,s,max};
+  },
+
+  // Struktur: 2 pivot high & 2 pivot low terakhir → HH+HL naik, LH+LL turun
+  structure(ctx){
+    const H=ctx.piv.highs, L=ctx.piv.lows;
+    if(H.length<2||L.length<2) return {dir:0,label:'pivot belum cukup',text:''};
+    const [h1,h2]=H.slice(-2), [l1,l2]=L.slice(-2), hh=h2.p>h1.p, hl=l2.p>l1.p;
+    const text=`high ${U.p(h1.p)} → ${U.p(h2.p)}, low ${U.p(l1.p)} → ${U.p(l2.p)}`;
+    if(hh&&hl) return {dir:1,score:60,label:'Higher High + Higher Low',text};
+    if(!hh&&!hl) return {dir:-1,score:60,label:'Lower High + Lower Low',text};
+    return {dir:0,label: hh?'Higher High + Lower Low (melebar)':'Lower High + Higher Low (menyempit)',text};
+  },
+
+  // Support/Resistance: pivot high & low dikelompokkan bila jaraknya ≤ 0,5×ATR
+  sr(ctx){
+    const {c,n,piv}=ctx, a=ctx.atr[n-1], px=c[n-1].c;
+    if(!a) return {levels:[],sup:[],res:[]};
+    const from=Math.max(0,n-CFG.SR_LOOKBACK);
+    const pts=[...piv.highs,...piv.lows].filter(p=>p.i>=from).sort((x,y)=>x.p-y.p);
+    const cl=[];
+    for(const p of pts){
+      const last=cl[cl.length-1];
+      if(last && p.p-last.avg<=CFG.SR_CLUSTER_ATR*a){ last.pts.push(p); last.avg=last.pts.reduce((s,q)=>s+q.p,0)/last.pts.length; }
+      else cl.push({pts:[p],avg:p.p});
+    }
+    const levels=cl.map(k=>({price:k.avg,touches:k.pts.length}));
+    return {
+      levels,
+      sup:levels.filter(l=>l.price<px).sort((x,y)=>y.price-x.price).slice(0,CFG.SR_MAX_LEVELS),
+      res:levels.filter(l=>l.price>px).sort((x,y)=>x.price-y.price).slice(0,CFG.SR_MAX_LEVELS),
+    };
+  },
+  nearest(levels,price){
+    let best=null; for(const l of levels){ if(!best||Math.abs(l.price-price)<Math.abs(best.price-price)) best=l; } return best;
+  },
+
+  rsiInfo(ctx){
+    const r=ctx.rsi[ctx.n-1];
+    if(r==null) return {v:null,dir:0,label:'data kurang'};
+    if(r>=CFG.RSI_OB) return {v:r,dir:-1,score:45,label:`RSI ${U.n(r,1)} overbought (≥ ${CFG.RSI_OB}), rawan koreksi`};
+    if(r<=CFG.RSI_OS) return {v:r,dir:1,score:45,label:`RSI ${U.n(r,1)} oversold (≤ ${CFG.RSI_OS}), rawan pantulan`};
+    if(r>=55) return {v:r,dir:1,score:30,label:`RSI ${U.n(r,1)} momentum bullish (55–70)`};
+    if(r<=45) return {v:r,dir:-1,score:30,label:`RSI ${U.n(r,1)} momentum bearish (30–45)`};
+    return {v:r,dir:0,label:`RSI ${U.n(r,1)} netral (45–55)`};
+  },
+
+  macdInfo(ctx){
+    const i=ctx.n-1, {line,signal,hist}=ctx.macd;
+    if(hist[i]==null||hist[i-1]==null) return {dir:0,label:'data kurang'};
+    let cross=null;
+    for(let k=i;k>i-CFG.MACD_CROSS_BARS && k>0;k--){
+      if(hist[k-1]!=null && hist[k]!==0 && Math.sign(hist[k])!==Math.sign(hist[k-1])){ cross={dir:Math.sign(hist[k]),ago:i-k}; break; }
+    }
+    const dir=hist[i]>0?1:-1, rising=Math.abs(hist[i])>Math.abs(hist[i-1]);
+    const score=35+(cross&&cross.dir===dir?20:0)+(rising?10:0);
+    const d=S.dec+2;
+    let label=`MACD ${dir>0?'di atas':'di bawah'} signal, histogram ${U.n(hist[i],d)} (${rising?'menguat':'melemah'})`;
+    if(cross) label+=`; cross ${cross.dir>0?'naik':'turun'} ${cross.ago===0?'di candle terakhir':cross.ago+' candle lalu'}`;
+    return {dir,score,label,line:line[i],signal:signal[i],hist:hist[i],cross};
+  },
+
+  volInfo(ctx){
+    const i=ctx.n-1, avg=ctx.volAvg[i];
+    if(!avg) return {ratio:null,label:'data kurang'};
+    const r=ctx.c[i].v/avg;
+    return {ratio:r,label:`${U.n(r,2)}× rata-rata ${CFG.VOL_LEN} candle ${r>=CFG.VOL_HIGH?'(tinggi)':r<CFG.VOL_LOW?'(rendah)':'(normal)'}`};
+  },
+
+  atrInfo(ctx){
+    const i=ctx.n-1, a=ctx.atr[i];
+    return {v:a, pct:a?a/ctx.c[i].c:null};
+  },
+
+  // Divergensi reguler: harga HH tapi RSI LH (bearish) / harga LL tapi RSI HL (bullish)
+  divergence(ctx){
+    const {c,n,rsi,piv}=ctx, out=[];
+    const pair=(arr)=>{ const f=arr.filter(p=>p.i>=n-CFG.DIV_LOOKBACK && rsi[p.i]!=null); return f.length>=2 ? f.slice(-2) : null; };
+    const H=pair(piv.highs), L=pair(piv.lows);
+    if(H){
+      const [a,b]=H, ra=rsi[a.i], rb=rsi[b.i], age=n-1-b.i;
+      if(b.i-a.i>=CFG.DIV_MIN_BARS && age<=CFG.DIV_MAX_AGE && b.p>a.p && rb<ra-CFG.DIV_MIN_RSI){
+        let lo=Infinity; for(let j=a.i+1;j<b.i;j++) lo=Math.min(lo,c[j].l);
+        out.push({name:'Divergensi Bearish RSI',dir:-1,i:b.i,t:c[b.i].t,score:Math.round(U.clamp(55+(ra-rb)*1.5,0,90)),
+          reasons:[`harga membuat high lebih tinggi: ${U.p(a.p)} → ${U.p(b.p)}`,`RSI justru lebih rendah: ${U.n(ra,1)} → ${U.n(rb,1)} (selisih ${U.n(ra-rb,1)} poin ≥ ${CFG.DIV_MIN_RSI})`,`jarak ${b.i-a.i} candle, pivot terakhir ${age} candle lalu`],
+          confirm:`close di bawah ${U.p(lo)} (low di antara dua puncak)`,invalid:`close di atas ${U.p(b.p)} disertai RSI membuat high baru`});
+      }
+    }
+    if(L){
+      const [a,b]=L, ra=rsi[a.i], rb=rsi[b.i], age=n-1-b.i;
+      if(b.i-a.i>=CFG.DIV_MIN_BARS && age<=CFG.DIV_MAX_AGE && b.p<a.p && rb>ra+CFG.DIV_MIN_RSI){
+        let hi=-Infinity; for(let j=a.i+1;j<b.i;j++) hi=Math.max(hi,c[j].h);
+        out.push({name:'Divergensi Bullish RSI',dir:1,i:b.i,t:c[b.i].t,score:Math.round(U.clamp(55+(rb-ra)*1.5,0,90)),
+          reasons:[`harga membuat low lebih rendah: ${U.p(a.p)} → ${U.p(b.p)}`,`RSI justru lebih tinggi: ${U.n(ra,1)} → ${U.n(rb,1)} (selisih ${U.n(rb-ra,1)} poin ≥ ${CFG.DIV_MIN_RSI})`,`jarak ${b.i-a.i} candle, pivot terakhir ${age} candle lalu`],
+          confirm:`close di atas ${U.p(hi)} (high di antara dua lembah)`,invalid:`close di bawah ${U.p(b.p)} disertai RSI membuat low baru`});
+      }
+    }
+    return out;
+  },
+};
+
+/* =====================================================================
+   MODUL 7: DETEKSI POLA CANDLESTICK (hanya dari data yang diberikan;
+   panel memakai candle close, "pola sementara" memakai candle berjalan)
+   ===================================================================== */
+const CP = {
+  // body=|C−O|, range=H−L, upper=H−max(O,C), lower=min(O,C)−L
+  m(x){
+    const body=Math.abs(x.c-x.o), range=x.h-x.l, up=x.h-Math.max(x.o,x.c), lo=Math.min(x.o,x.c)-x.l;
+    return {body,range,up,lo,bodyPct:range>0?body/range:0,upPct:range>0?up/range:0,loPct:range>0?lo/range:0,bull:x.c>x.o,bear:x.c<x.o};
+  },
+
+  detect(ctx,i){
+    const c=ctx.c, a=ctx.atr[i];
+    if(a==null || i<CFG.TREND_LOOKBACK+3) return [];
+    const out=[], x=c[i], p=c[i-1], q=c[i-2];
+    const m=CP.m(x), pm=CP.m(p), qm=CP.m(q);
+    const tr=CX.priorTrend(ctx,i), tr1=CX.priorTrend(ctx,i-1), tr2=CX.priorTrend(ctx,i-2);
+    const add=(o)=>out.push(SC.candle(ctx,i,o));
+    const big=m.range>=CFG.MIN_RANGE_ATR*a, rATR=m.range/a;
+
+    /* --- DOJI: body ≤ 10% range. Jenis ditentukan proporsi shadow:
+       Dragonfly: lower ≥ 60%, upper ≤ 10% | Gravestone: upper ≥ 60%, lower ≤ 10%
+       Long-legged: kedua shadow ≥ 30% dan range ≥ 1×ATR | selain itu: Doji standar */
+    if(big && m.bodyPct<=CFG.DOJI_BODY_MAX){
+      const base=[`body ${U.pct(m.bodyPct,1)} dari range (≤ ${U.pct(CFG.DOJI_BODY_MAX)})`];
+      if(m.loPct>=CFG.DOJI_LONG_SHADOW_MIN && m.upPct<=CFG.DOJI_SHORT_SHADOW_MAX)
+        add({name:'Dragonfly Doji',dir:1,kind:'reversal',first:i,base:40,quality:tr.dir<0?10:0,tr,
+          reasons:[...base,`lower shadow ${U.pct(m.loPct)} dari range, upper shadow ${U.pct(m.upPct)}`]});
+      else if(m.upPct>=CFG.DOJI_LONG_SHADOW_MIN && m.loPct<=CFG.DOJI_SHORT_SHADOW_MAX)
+        add({name:'Gravestone Doji',dir:-1,kind:'reversal',first:i,base:40,quality:tr.dir>0?10:0,tr,
+          reasons:[...base,`upper shadow ${U.pct(m.upPct)} dari range, lower shadow ${U.pct(m.loPct)}`]});
+      else if(m.upPct>=CFG.DOJI_LONGLEG_SHADOW_MIN && m.loPct>=CFG.DOJI_LONGLEG_SHADOW_MIN && rATR>=CFG.DOJI_LONGLEG_RANGE_ATR)
+        add({name:'Long-Legged Doji',dir:0,kind:'indecision',first:i,base:35,quality:0,tr,
+          reasons:[...base,`shadow atas ${U.pct(m.upPct)} & bawah ${U.pct(m.loPct)} dari range`,`range ${U.n(rATR,2)}× ATR`]});
+      else
+        add({name:'Doji',dir:0,kind:'indecision',first:i,base:28,quality:0,tr,
+          reasons:[...base,`range ${U.n(rATR,2)}× ATR`]});
+    }
+
+    /* --- HAMMER / HANGING MAN: body 10–35% range, lower shadow ≥ 2× body, upper ≤ 10% range.
+       Setelah tren turun = Hammer (bullish); setelah tren naik = Hanging Man (bearish).
+       --- INVERTED HAMMER / SHOOTING STAR: cermin (upper shadow ≥ 2× body, lower ≤ 10%). */
+    if(big && m.bodyPct>CFG.DOJI_BODY_MAX && m.bodyPct<=CFG.HAMMER_BODY_MAX){
+      const loR=m.lo/m.body, upR=m.up/m.body;
+      if(loR>=CFG.HAMMER_SHADOW_RATIO && m.upPct<=CFG.HAMMER_OPP_SHADOW_MAX && tr.dir!==0){
+        const bull=tr.dir<0;
+        add({name:bull?'Hammer':'Hanging Man',dir:bull?1:-1,kind:'reversal',first:i,base:bull?50:45,
+          quality:U.clamp((loR-CFG.HAMMER_SHADOW_RATIO)*5,0,12),tr,
+          reasons:[`body ${U.pct(m.bodyPct)} dari range`,`lower shadow ${U.n(loR,1)}× body (≥ ${U.n(CFG.HAMMER_SHADOW_RATIO,1)})`,`upper shadow ${U.pct(m.upPct)} dari range`]});
+      }
+      if(upR>=CFG.HAMMER_SHADOW_RATIO && m.loPct<=CFG.HAMMER_OPP_SHADOW_MAX && tr.dir!==0){
+        const bull=tr.dir<0;
+        add({name:bull?'Inverted Hammer':'Shooting Star',dir:bull?1:-1,kind:'reversal',first:i,base:bull?42:50,
+          quality:U.clamp((upR-CFG.HAMMER_SHADOW_RATIO)*5,0,12),tr,
+          reasons:[`body ${U.pct(m.bodyPct)} dari range`,`upper shadow ${U.n(upR,1)}× body (≥ ${U.n(CFG.HAMMER_SHADOW_RATIO,1)})`,`lower shadow ${U.pct(m.loPct)} dari range`]});
+      }
+    }
+
+    /* --- MARUBOZU: body ≥ 90% range dan range ≥ 0,8×ATR (dorongan searah warna candle) */
+    if(m.bodyPct>=CFG.MARUBOZU_BODY_MIN && rATR>=CFG.MARUBOZU_RANGE_ATR && m.body>0)
+      add({name:m.bull?'Bullish Marubozu':'Bearish Marubozu',dir:m.bull?1:-1,kind:'continuation',first:i,base:42,
+        quality:U.clamp((rATR-1)*8,0,12),tr:null,
+        reasons:[`body ${U.pct(m.bodyPct)} dari range (≥ ${U.pct(CFG.MARUBOZU_BODY_MIN)})`,`range ${U.n(rATR,2)}× ATR`]});
+
+    /* --- ENGULFING: candle 2 berlawanan warna, body-nya menelan body candle 1 sepenuhnya
+       (open ≤ close₁ dan close ≥ open₁ untuk bullish) dengan body > body₁. Butuh tren sebelumnya. */
+    const prevOK=pm.body>=CFG.ENGULF_PREV_MIN_ATR*a;
+    if(prevOK && pm.bear && m.bull && x.c>=p.o && x.o<=p.c && m.body>pm.body*CFG.ENGULF_MIN_RATIO && tr1.dir<0){
+      const r=m.body/pm.body;
+      add({name:'Bullish Engulfing',dir:1,kind:'reversal',first:i-1,base:58,quality:U.clamp((r-1)*8,0,15),tr:tr1,
+        reasons:[`body candle hijau ${U.n(r,2)}× body candle merah sebelumnya`,`close ${U.p(x.c)} di atas open candle merah ${U.p(p.o)}`]});
+    }
+    if(prevOK && pm.bull && m.bear && x.o>=p.c && x.c<=p.o && m.body>pm.body*CFG.ENGULF_MIN_RATIO && tr1.dir>0){
+      const r=m.body/pm.body;
+      add({name:'Bearish Engulfing',dir:-1,kind:'reversal',first:i-1,base:58,quality:U.clamp((r-1)*8,0,15),tr:tr1,
+        reasons:[`body candle merah ${U.n(r,2)}× body candle hijau sebelumnya`,`close ${U.p(x.c)} di bawah open candle hijau ${U.p(p.o)}`]});
+    }
+
+    /* --- HARAMI: candle 1 besar (body ≥ 50% range & ≥ 0,6×ATR), body candle 2 ≤ 50% body₁
+       dan seluruhnya di dalam body₁. Harami Cross bila candle 2 doji. */
+    const longPrev=pm.bodyPct>=CFG.LONG_BODY_PCT && pm.body>=CFG.LONG_BODY_ATR*a;
+    const inside=Math.max(x.o,x.c)<=Math.max(p.o,p.c) && Math.min(x.o,x.c)>=Math.min(p.o,p.c) && m.body<=CFG.HARAMI_MAX_RATIO*pm.body;
+    if(longPrev && inside){
+      const cross=m.bodyPct<=CFG.DOJI_BODY_MAX;
+      const rs=[`candle pertama besar: body ${U.n(pm.body/a,2)}× ATR`,`body candle kedua ${U.pct(m.body/pm.body)} dari body pertama dan berada di dalamnya`];
+      if(pm.bear && tr1.dir<0) add({name:cross?'Bullish Harami Cross':'Bullish Harami',dir:1,kind:'reversal',first:i-1,base:cross?44:40,quality:m.bull?5:0,tr:tr1,reasons:rs});
+      if(pm.bull && tr1.dir>0) add({name:cross?'Bearish Harami Cross':'Bearish Harami',dir:-1,kind:'reversal',first:i-1,base:cross?44:40,quality:m.bear?5:0,tr:tr1,reasons:rs});
+    }
+
+    /* --- PIERCING LINE: candle 1 merah besar, candle 2 hijau open ≤ close₁ lalu close
+       menembus ≥ 50% body₁ tetapi < open₁.  DARK CLOUD COVER: cerminannya. */
+    if(longPrev && pm.bear && m.bull && x.o<=p.c && tr1.dir<0){
+      const pen=(x.c-p.c)/pm.body;
+      if(pen>=CFG.PIERCE_MIN_PEN && x.c<p.o)
+        add({name:'Piercing Line',dir:1,kind:'reversal',first:i-1,base:52,quality:U.clamp((pen-0.5)*30,0,12),tr:tr1,
+          reasons:[`close menembus ${U.pct(pen)} body candle merah (≥ ${U.pct(CFG.PIERCE_MIN_PEN)})`,`open ${U.p(x.o)} ≤ close sebelumnya ${U.p(p.c)}`]});
+    }
+    if(longPrev && pm.bull && m.bear && x.o>=p.c && tr1.dir>0){
+      const pen=(p.c-x.c)/pm.body;
+      if(pen>=CFG.PIERCE_MIN_PEN && x.c>p.o)
+        add({name:'Dark Cloud Cover',dir:-1,kind:'reversal',first:i-1,base:52,quality:U.clamp((pen-0.5)*30,0,12),tr:tr1,
+          reasons:[`close menembus ${U.pct(pen)} body candle hijau (≥ ${U.pct(CFG.PIERCE_MIN_PEN)})`,`open ${U.p(x.o)} ≥ close sebelumnya ${U.p(p.c)}`]});
+    }
+
+    /* --- TWEEZER: dua low (bottom) / dua high (top) berselisih ≤ 0,05×ATR, warna berlawanan */
+    const tol=CFG.TWEEZER_TOL_ATR*a;
+    if(big && pm.range>=CFG.MIN_RANGE_ATR*a){
+      const dl=Math.abs(x.l-p.l), dh=Math.abs(x.h-p.h);
+      if(pm.bear && m.bull && dl<=tol && tr1.dir<0)
+        add({name:'Tweezer Bottom',dir:1,kind:'reversal',first:i-1,base:45,quality:U.clamp((1-dl/tol)*8,0,8),tr:tr1,
+          reasons:[`dua low hampir sama: ${U.p(p.l)} dan ${U.p(x.l)} (selisih ${U.n(dl/a,3)}× ATR ≤ ${U.n(CFG.TWEEZER_TOL_ATR,2)})`]});
+      if(pm.bull && m.bear && dh<=tol && tr1.dir>0)
+        add({name:'Tweezer Top',dir:-1,kind:'reversal',first:i-1,base:45,quality:U.clamp((1-dh/tol)*8,0,8),tr:tr1,
+          reasons:[`dua high hampir sama: ${U.p(p.h)} dan ${U.p(x.h)} (selisih ${U.n(dh/a,3)}× ATR ≤ ${U.n(CFG.TWEEZER_TOL_ATR,2)})`]});
+    }
+
+    /* --- MORNING STAR: (1) merah besar, (2) body kecil ≤ 30% body₁ di sekitar/di bawah close₁,
+       (3) hijau yang close ≥ 50% ke dalam body₁.  EVENING STAR: cerminannya. */
+    const longQ=qm.bodyPct>=CFG.LONG_BODY_PCT && qm.body>=CFG.LONG_BODY_ATR*a;
+    if(longQ && qm.bear && pm.body<=CFG.STAR_BODY_MAX_RATIO*qm.body && Math.max(p.o,p.c)<=q.c+CFG.STAR_GAP_TOL*qm.body && m.bull && tr2.dir<0){
+      const pen=(x.c-q.c)/qm.body;
+      if(pen>=CFG.STAR_PEN_MIN)
+        add({name:'Morning Star',dir:1,kind:'reversal',first:i-2,base:62,quality:U.clamp((pen-0.5)*20,0,12),tr:tr2,
+          reasons:[`candle 1 merah besar (body ${U.n(qm.body/a,2)}× ATR)`,`candle 2 kecil: body ${U.pct(pm.body/qm.body)} dari candle 1`,`candle 3 hijau menutup ${U.pct(pen)} ke dalam body candle 1`]});
+    }
+    if(longQ && qm.bull && pm.body<=CFG.STAR_BODY_MAX_RATIO*qm.body && Math.min(p.o,p.c)>=q.c-CFG.STAR_GAP_TOL*qm.body && m.bear && tr2.dir>0){
+      const pen=(q.c-x.c)/qm.body;
+      if(pen>=CFG.STAR_PEN_MIN)
+        add({name:'Evening Star',dir:-1,kind:'reversal',first:i-2,base:62,quality:U.clamp((pen-0.5)*20,0,12),tr:tr2,
+          reasons:[`candle 1 hijau besar (body ${U.n(qm.body/a,2)}× ATR)`,`candle 2 kecil: body ${U.pct(pm.body/qm.body)} dari candle 1`,`candle 3 merah menutup ${U.pct(pen)} ke dalam body candle 1`]});
+    }
+
+    /* --- THREE WHITE SOLDIERS: 3 hijau beruntun, body ≥ 60% range & ≥ 0,4×ATR, upper shadow ≤ 25%,
+       tiap close lebih tinggi dan tiap open di dalam body sebelumnya.  THREE BLACK CROWS: cerminan. */
+    const sold=(k,km)=>km.bull && km.bodyPct>=CFG.SOLDIER_BODY_MIN && km.upPct<=CFG.SOLDIER_SHADOW_MAX && km.body>=CFG.SOLDIER_BODY_ATR*a;
+    const crow=(k,km)=>km.bear && km.bodyPct>=CFG.SOLDIER_BODY_MIN && km.loPct<=CFG.SOLDIER_SHADOW_MAX && km.body>=CFG.SOLDIER_BODY_ATR*a;
+    if(sold(q,qm)&&sold(p,pm)&&sold(x,m) && p.c>q.c && x.c>p.c && p.o>=q.o && p.o<=q.c && x.o>=p.o && x.o<=p.c)
+      add({name:'Three White Soldiers',dir:1,kind:tr2.dir<0?'reversal':'continuation',first:i-2,base:60,quality:tr2.dir<0?10:0,tr:tr2,
+        reasons:[`3 candle hijau beruntun, body ${U.pct(qm.bodyPct)}/${U.pct(pm.bodyPct)}/${U.pct(m.bodyPct)} dari range`,`close naik bertahap: ${U.p(q.c)} → ${U.p(p.c)} → ${U.p(x.c)}`,`upper shadow maks ${U.pct(Math.max(qm.upPct,pm.upPct,m.upPct))} dari range`]});
+    if(crow(q,qm)&&crow(p,pm)&&crow(x,m) && p.c<q.c && x.c<p.c && p.o<=q.o && p.o>=q.c && x.o<=p.o && x.o>=p.c)
+      add({name:'Three Black Crows',dir:-1,kind:tr2.dir>0?'reversal':'continuation',first:i-2,base:60,quality:tr2.dir>0?10:0,tr:tr2,
+        reasons:[`3 candle merah beruntun, body ${U.pct(qm.bodyPct)}/${U.pct(pm.bodyPct)}/${U.pct(m.bodyPct)} dari range`,`close turun bertahap: ${U.p(q.c)} → ${U.p(p.c)} → ${U.p(x.c)}`,`lower shadow maks ${U.pct(Math.max(qm.loPct,pm.loPct,m.loPct))} dari range`]});
+
+    return out;
+  },
+};
+
+/* =====================================================================
+   MODUL 8: DETEKSI POLA CHART (berbasis pivot swing high/low)
+   ===================================================================== */
+const CH = {
+  // regresi linear titik pivot → garis tren; dev = jarak pivot terjauh dari garis
+  fit(pts){
+    const n=pts.length; let mx=0,my=0; pts.forEach(p=>{mx+=p.i;my+=p.p;}); mx/=n; my/=n;
+    let sxy=0,sxx=0; pts.forEach(p=>{sxy+=(p.i-mx)*(p.p-my); sxx+=(p.i-mx)**2;});
+    const slope=sxx?sxy/sxx:0, b=my-slope*mx, at=x=>b+slope*x;
+    return {slope,at,dev:Math.max(...pts.map(p=>Math.abs(p.p-at(p.i))))};
+  },
+  ext(c,a,b,key,isMin){ let best=null; for(let j=a+1;j<b;j++){ const v=c[j][key]; if(!best||(isMin?v<best.p:v>best.p)) best={i:j,p:v}; } return best; },
+  volNote(ctx,j){ const avg=ctx.volAvg[j]; if(!avg) return {txt:'',bonus:0}; const r=ctx.c[j].v/avg; return {txt:`volume candle breakout ${U.n(r,2)}× rata-rata`,bonus:r>=CFG.VOL_HIGH?8:0}; },
+  make(ctx,o){ return {...o,score:Math.round(U.clamp(o.score,0,100)),t:ctx.c[o.i].t}; },
+
+  detect(ctx){
+    const out=[]; if(!ctx.atr[ctx.n-1]) return out;
+    CH.doubles(ctx,out,1); CH.doubles(ctx,out,-1);
+    CH.hs(ctx,out,1); CH.hs(ctx,out,-1);
+    CH.lines(ctx,out);
+    CH.flag(ctx,out);
+    return out.sort((x,y)=>y.score-x.score);
+  },
+
+  /* DOUBLE TOP: dua pivot high terakhir berselisih ≤ 0,5×ATR, berjarak 8–100 candle,
+     tidak ada high lebih tinggi di antaranya, kedalaman ke neckline (low terendah di antara) ≥ 1,5×ATR.
+     Terkonfirmasi bila close < neckline. Batal bila close > puncak. DOUBLE BOTTOM: cermin. side=1 → top */
+  doubles(ctx,out,side){
+    const {c,n,piv}=ctx, a=ctx.atr[n-1], last=c[n-1].c, LB=n-CFG.CHART_LOOKBACK;
+    const P=(side>0?piv.highs:piv.lows).filter(p=>p.i>=LB);
+    if(P.length<2) return;
+    const p2=P[P.length-1];
+    for(let k=P.length-2;k>=0;k--){
+      const p1=P[k], gap=p2.i-p1.i;
+      if(gap<CFG.DOUBLE_MIN_BARS) continue;
+      if(gap>CFG.DOUBLE_MAX_BARS) return;
+      const diff=Math.abs(p1.p-p2.p); if(diff>CFG.DOUBLE_TOL_ATR*a) continue;
+      const ext= side>0 ? Math.max(p1.p,p2.p) : Math.min(p1.p,p2.p);
+      let neck= side>0 ? Infinity : -Infinity, ok=true;
+      for(let j=p1.i+1;j<p2.i;j++){
+        if(side>0 ? c[j].h>ext : c[j].l<ext){ ok=false; break; }
+        neck= side>0 ? Math.min(neck,c[j].l) : Math.max(neck,c[j].h);
+      }
+      if(!ok) return;
+      const depth=Math.abs(ext-neck); if(depth<CFG.DOUBLE_MIN_DEPTH_ATR*a) continue;
+      let brk=-1;
+      for(let j=p2.i+1;j<n;j++){
+        if(side>0 ? c[j].c>ext : c[j].c<ext) return;           // pola batal
+        if(brk<0 && (side>0 ? c[j].c<neck : c[j].c>neck)) brk=j;
+      }
+      if(brk>=0 && n-1-brk>CFG.BREAK_MAX_AGE) return;
+      const conf=brk>=0, v1=c[p1.i].v||1, v2=c[p2.i].v, vn=conf?CH.volNote(ctx,brk):{txt:'',bonus:0};
+      const top=side>0, word=top?'puncak':'lembah';
+      const reasons=[
+        `dua ${word} ${U.p(p1.p)} (${U.time(c[p1.i].t)}) dan ${U.p(p2.p)} (${U.time(c[p2.i].t)}), selisih ${U.n(diff/a,2)}× ATR (≤ ${U.n(CFG.DOUBLE_TOL_ATR,1)})`,
+        `jarak ${gap} candle, tinggi pola ${U.n(depth/a,1)}× ATR`,
+        `neckline ${U.p(neck)}; ${conf?`sudah ditembus (close ${U.p(c[brk].c)})`:`harga ${U.p(last)} belum menembus`}`,
+        `volume ${word} kedua ${U.n(v2/v1,2)}× ${word} pertama`,
+      ];
+      if(vn.txt) reasons.push(vn.txt);
+      const target= top ? neck-depth : neck+depth;
+      out.push(CH.make(ctx,{
+        name: top?'Double Top':'Double Bottom', dir: top?-1:1, i: conf?brk:p2.i,
+        status: conf?'Terkonfirmasi':'Terbentuk, menunggu konfirmasi',
+        score: 55+(1-diff/(CFG.DOUBLE_TOL_ATR*a))*10+(conf?15:0)+(v2<v1?5:0)+vn.bonus, reasons,
+        confirm: `close ${top?'di bawah':'di atas'} neckline ${U.p(neck)} (target ukur ±${U.p(target)})`,
+        invalid: `close ${top?'di atas':'di bawah'} ${U.p(ext)}`,
+      }));
+      return;
+    }
+  },
+
+  /* HEAD & SHOULDERS: 3 pivot high terakhir; head ≥ 0,5×ATR di atas bahu tertinggi,
+     selisih kedua bahu ≤ 1×ATR. Neckline = garis antara dua low di antaranya (boleh miring).
+     Terkonfirmasi saat close < neckline; batal bila close > head. INVERSE: cermin. side=1 → H&S */
+  hs(ctx,out,side){
+    const {c,n,piv}=ctx, a=ctx.atr[n-1], LB=n-CFG.CHART_LOOKBACK;
+    const P=(side>0?piv.highs:piv.lows).filter(p=>p.i>=LB);
+    if(P.length<3) return;
+    const [ls,hd,rs]=P.slice(-3), s=side;
+    const shoulderExt= s>0 ? Math.max(ls.p,rs.p) : Math.min(ls.p,rs.p);
+    if(s*(hd.p-shoulderExt)<CFG.HS_HEAD_MIN_ATR*a) return;
+    if(Math.abs(ls.p-rs.p)>CFG.HS_SHOULDER_TOL_ATR*a) return;
+    const t1=CH.ext(c,ls.i,hd.i,s>0?'l':'h',s>0), t2=CH.ext(c,hd.i,rs.i,s>0?'l':'h',s>0);
+    if(!t1||!t2||t2.i===t1.i) return;
+    const slope=(t2.p-t1.p)/(t2.i-t1.i), neckAt=x=>t1.p+slope*(x-t1.i);
+    if(s*(shoulderExt-(s>0?Math.max(t1.p,t2.p):Math.min(t1.p,t2.p)))<=0) return;
+    let brk=-1;
+    for(let j=rs.i+1;j<n;j++){
+      if(s>0 ? c[j].c>hd.p : c[j].c<hd.p) return;
+      if(brk<0 && (s>0 ? c[j].c<neckAt(j) : c[j].c>neckAt(j))) brk=j;
+    }
+    if(brk>=0 && n-1-brk>CFG.BREAK_MAX_AGE) return;
+    const conf=brk>=0, height=Math.abs(hd.p-neckAt(hd.i)), neckNow=neckAt(n-1), vn=conf?CH.volNote(ctx,brk):{txt:'',bonus:0};
+    const sym=1-Math.abs(ls.p-rs.p)/(CFG.HS_SHOULDER_TOL_ATR*a);
+    const reasons=[
+      `bahu kiri ${U.p(ls.p)}, kepala ${U.p(hd.p)}, bahu kanan ${U.p(rs.p)}`,
+      `kepala ${U.n(Math.abs(hd.p-shoulderExt)/a,2)}× ATR ${s>0?'di atas':'di bawah'} bahu (≥ ${U.n(CFG.HS_HEAD_MIN_ATR,1)}), selisih bahu ${U.n(Math.abs(ls.p-rs.p)/a,2)}× ATR`,
+      `neckline dari ${U.p(t1.p)} ke ${U.p(t2.p)}, saat ini ${U.p(neckNow)}`,
+      conf ? `neckline ditembus: close ${U.p(c[brk].c)}` : `harga ${U.p(c[n-1].c)} belum menembus neckline`,
+    ];
+    if(vn.txt) reasons.push(vn.txt);
+    out.push(CH.make(ctx,{
+      name: s>0?'Head & Shoulders':'Inverse Head & Shoulders', dir:-s, i: conf?brk:rs.i,
+      status: conf?'Terkonfirmasi':'Terbentuk, menunggu konfirmasi',
+      score: 58+sym*10+(conf?15:0)+vn.bonus, reasons,
+      confirm: `close ${s>0?'di bawah':'di atas'} neckline ~${U.p(neckNow)} (target ±${U.p(s>0?neckNow-height:neckNow+height)})`,
+      invalid: `close ${s>0?'di atas':'di bawah'} kepala ${U.p(hd.p)}`,
+    }));
+  },
+
+  /* TRIANGLE / WEDGE / CHANNEL: regresi 2–3 pivot high (garis atas) & 2–3 pivot low (garis bawah).
+     Kemiringan dinormalisasi ATR/candle; datar bila |s| ≤ 0,02. Menyempit bila lebar akhir < 75% lebar awal.
+       Ascending triangle  : atas datar, bawah naik        → bullish
+       Descending triangle : bawah datar, atas turun       → bearish
+       Symmetrical triangle: atas turun, bawah naik        → netral (ikut arah breakout)
+       Rising wedge        : keduanya naik & menyempit     → bearish
+       Falling wedge       : keduanya turun & menyempit    → bullish
+       Channel             : kemiringan sejajar (selisih ≤ 0,015) & lebar stabil */
+  lines(ctx,out){
+    const {c,n,piv}=ctx, a=ctx.atr[n-1], last=c[n-1].c, LB=n-CFG.CHART_LOOKBACK;
+    const HP=piv.highs.filter(p=>p.i>=LB).slice(-CFG.TL_PIVOTS), LP=piv.lows.filter(p=>p.i>=LB).slice(-CFG.TL_PIVOTS);
+    if(HP.length<2||LP.length<2) return;
+    const x0=Math.min(HP[0].i,LP[0].i), x1=n-1;
+    if(x1-x0<CFG.TL_MIN_SPAN) return;
+    const up=CH.fit(HP), lo=CH.fit(LP);
+    if(up.dev>CFG.TL_MAX_DEV_ATR*a || lo.dev>CFG.TL_MAX_DEV_ATR*a) return;
+    const w0=up.at(x0)-lo.at(x0), w1=up.at(x1)-lo.at(x1);
+    if(w0<=0||w1<=0) return;
+    const lastPiv=Math.max(HP[HP.length-1].i, LP[LP.length-1].i);
+    let viol=0,tot=0;
+    for(let j=x0;j<=lastPiv;j++){ tot++; if(c[j].c>up.at(j)+0.5*a || c[j].c<lo.at(j)-0.5*a) viol++; }
+    if(viol/tot>CFG.TL_CONTAIN_MAX_VIOL) return;
+
+    const sH=up.slope/a, sL=lo.slope/a, F=CFG.TL_FLAT_SLOPE_ATR, ratio=w1/w0;
+    const conv=ratio<CFG.TL_CONVERGE_RATIO;
+    const par=Math.abs(sH-sL)<=CFG.TL_PARALLEL_TOL_ATR && ratio>=CFG.TL_CONVERGE_RATIO && ratio<=1/CFG.TL_CONVERGE_RATIO;
+    let name=null, dir=0, type='tri';
+    if(conv){
+      if(Math.abs(sH)<=F && sL>F){name='Ascending Triangle';dir=1;}
+      else if(Math.abs(sL)<=F && sH<-F){name='Descending Triangle';dir=-1;}
+      else if(sH<-F && sL>F){name='Symmetrical Triangle';dir=0;}
+      else if(sH>F && sL>F){name='Rising Wedge';dir=-1;}
+      else if(sH<-F && sL<-F){name='Falling Wedge';dir=1;}
+    } else if(par){
+      type='chan';
+      if(sH>F && sL>F){name='Ascending Channel';dir=1;}
+      else if(sH<-F && sL<-F){name='Descending Channel';dir=-1;}
+      else if(Math.abs(sH)<=F && Math.abs(sL)<=F){name='Horizontal Channel (Range)';dir=0;}
+    }
+    if(!name) return;
+
+    let brk=null;
+    for(let j=lastPiv+1;j<n;j++){
+      if(c[j].c>up.at(j)){brk={j,dir:1};break;}
+      if(c[j].c<lo.at(j)){brk={j,dir:-1};break;}
+    }
+    if(brk && n-1-brk.j>CFG.BREAK_MAX_AGE) return;
+    const upNow=up.at(x1), loNow=lo.at(x1);
+    const fitQ=1-Math.max(up.dev,lo.dev)/(CFG.TL_MAX_DEV_ATR*a);
+    let score=50+(HP.length+LP.length-4)*5+fitQ*10, status='Terbentuk, harga di dalam pola', finalDir=dir;
+    const reasons=[
+      `garis atas: ${HP.length} pivot high, kemiringan ${U.n(sH,3)} ATR/candle`,
+      `garis bawah: ${LP.length} pivot low, kemiringan ${U.n(sL,3)} ATR/candle`,
+      type==='tri' ? `lebar menyempit ${U.p(w0)} → ${U.p(w1)} (${U.pct(ratio)} dari awal, < ${U.pct(CFG.TL_CONVERGE_RATIO)})`
+                   : `garis sejajar, lebar ${U.p(w0)} → ${U.p(w1)}`,
+      `batas saat ini: atas ${U.p(upNow)}, bawah ${U.p(loNow)}; harga ${U.p(last)}`,
+    ];
+    if(brk){
+      const vn=CH.volNote(ctx,brk.j);
+      if(dir===0||brk.dir===dir){ status=`Breakout ${brk.dir>0?'ke atas':'ke bawah'} terkonfirmasi`; score+=15+vn.bonus; }
+      else { status='Gagal: breakout berlawanan arah pola'; score+=vn.bonus; }
+      finalDir=brk.dir;
+      reasons.push(`close ${U.p(c[brk.j].c)} ${brk.dir>0?'di atas garis atas':'di bawah garis bawah'} (${n-1-brk.j} candle lalu)`);
+      if(vn.txt) reasons.push(vn.txt);
+    }
+    let confirm, invalid;
+    if(brk){
+      confirm = brk.dir>0 ? `harga bertahan di atas ${U.p(upNow)} (retest garis atas)` : `harga bertahan di bawah ${U.p(loNow)} (retest garis bawah)`;
+      invalid = brk.dir>0 ? `close kembali di bawah ${U.p(upNow)}` : `close kembali di atas ${U.p(loNow)}`;
+    } else if(type==='chan'){
+      confirm = dir>0 ? `pantulan naik dari batas bawah ~${U.p(loNow)}` : dir<0 ? `penolakan dari batas atas ~${U.p(upNow)}` : `pantulan di batas ${U.p(loNow)} / ${U.p(upNow)}`;
+      invalid = dir>0 ? `close di bawah ${U.p(loNow)}` : dir<0 ? `close di atas ${U.p(upNow)}` : `close keluar range ${U.p(loNow)}–${U.p(upNow)}`;
+    } else if(dir>0){
+      confirm=`close di atas garis atas ${U.p(upNow)} dengan volume ≥ ${U.n(CFG.VOL_HIGH,1)}× rata-rata`; invalid=`close di bawah garis bawah ${U.p(loNow)}`;
+    } else if(dir<0){
+      confirm=`close di bawah garis bawah ${U.p(loNow)} dengan volume ≥ ${U.n(CFG.VOL_HIGH,1)}× rata-rata`; invalid=`close di atas garis atas ${U.p(upNow)}`;
+    } else {
+      confirm=`ikuti arah breakout: close di atas ${U.p(upNow)} (bullish) atau di bawah ${U.p(loNow)} (bearish)`; invalid=`netral sampai salah satu garis ditembus`;
+    }
+    out.push(CH.make(ctx,{name,dir:finalDir,i:brk?brk.j:lastPiv,status,score,reasons,confirm,invalid}));
+  },
+
+  /* FLAG / PENNANT: tiang = gerak ≥ 3×ATR dalam ≤ 10 candle, lalu konsolidasi 5–20 candle
+     yang tidak melewati ujung tiang dan retrace ≤ 50% tinggi tiang.
+     Pennant bila garis konsolidasi menyempit (< 60% lebar awal), selain itu Flag. */
+  flag(ctx,out){
+    const {c,n}=ctx;
+    for(let k=CFG.FLAG_MIN_BARS;k<=CFG.FLAG_MAX_BARS;k++){
+      const e=n-1-k, s0=e-CFG.POLE_MAX_BARS; if(s0<0) return;
+      const a=ctx.atr[e]; if(!a) continue;
+      const cons=[]; for(let j=e+1;j<n-1;j++) cons.push({i:j,x:c[j]});
+      if(cons.length<2) continue;
+      const cHi=Math.max(...cons.map(o=>o.x.h)), cLo=Math.min(...cons.map(o=>o.x.l)), lastC=c[n-1];
+      for(const side of [1,-1]){
+        let sI=s0, extOK=true;
+        for(let j=s0;j<=e;j++) if(side>0 ? c[j].l<c[sI].l : c[j].h>c[sI].h) sI=j;
+        for(let j=s0;j<e;j++) if(side>0 ? c[j].h>c[e].h : c[j].l<c[e].l){ extOK=false; break; }
+        const tip= side>0?c[e].h:c[e].l, base= side>0?c[sI].l:c[sI].h, pole=Math.abs(tip-base);
+        if(!extOK || e-sI<2 || pole<CFG.POLE_MIN_ATR*a) continue;
+        const limit= tip-side*CFG.FLAG_MAX_RETRACE*pole;
+        const inCons= side>0 ? (cHi<=tip+0.1*a && cLo>=limit && lastC.c>=limit) : (cLo>=tip-0.1*a && cHi<=limit && lastC.c<=limit);
+        if(!inCons) continue;
+        const fu=CH.fit(cons.map(o=>({i:o.i,p:o.x.h}))), fl=CH.fit(cons.map(o=>({i:o.i,p:o.x.l})));
+        const i0=cons[0].i, i1=cons[cons.length-1].i, w0=fu.at(i0)-fl.at(i0), w1=fu.at(i1)-fl.at(i1);
+        const pennant= w0>0 && w1<w0*CFG.PENNANT_CONVERGE;
+        const brk= side>0 ? lastC.c>cHi : lastC.c<cLo;
+        const vPole=c.slice(sI,e+1).reduce((s,x)=>s+x.v,0)/(e-sI+1), vCons=cons.reduce((s,o)=>s+o.x.v,0)/cons.length;
+        const retr= side>0 ? (tip-cLo)/pole : (cHi-tip)/pole;
+        const vn=brk?CH.volNote(ctx,n-1):{txt:'',bonus:0};
+        const reasons=[
+          `tiang ${side>0?'naik':'turun'} ${U.n(pole/a,1)}× ATR dalam ${e-sI} candle (${U.p(base)} → ${U.p(tip)})`,
+          `konsolidasi ${cons.length} candle, retrace maks ${U.pct(retr)} dari tiang (≤ ${U.pct(CFG.FLAG_MAX_RETRACE)})`,
+          `${pennant?`garis konsolidasi menyempit ke ${U.pct(w1/w0)} lebar awal`:'garis konsolidasi relatif sejajar'}`,
+          `volume konsolidasi ${U.n(vCons/(vPole||1),2)}× volume tiang`,
+        ];
+        if(brk) reasons.push(`candle terakhir close ${U.p(lastC.c)} menembus ${side>0?'atas':'bawah'} konsolidasi`);
+        if(vn.txt) reasons.push(vn.txt);
+        const edge= side>0?cHi:cLo, opp= side>0?cLo:cHi;
+        out.push(CH.make(ctx,{
+          name:`${side>0?'Bullish':'Bearish'} ${pennant?'Pennant':'Flag'}`, dir:side, i: brk?n-1:e,
+          status: brk?'Breakout terkonfirmasi':'Konsolidasi, menunggu breakout',
+          score: 52+U.clamp((pole/a-CFG.POLE_MIN_ATR)*3,0,10)+(vCons<vPole?6:0)+(brk?15:0)+vn.bonus, reasons,
+          confirm:`close ${side>0?'di atas':'di bawah'} ${U.p(edge)} (target ukur ±${U.p(edge+side*pole)})`,
+          invalid:`close ${side>0?'di bawah':'di atas'} ${U.p(opp)}`,
+        }));
+        return;
+      }
+    }
+  },
+};
+
+/* =====================================================================
+   MODUL 9: SKORING — skor tiap pola & bias berbobot keseluruhan
+   ===================================================================== */
+const SC = {
+  /* skor pola candle = skor dasar + kualitas bentuk
+     + volume (≥1,5× → +10, ≥2× → +15, <0,7× → −5) + dekat S/R searah (+12) + RSI ekstrem searah (+8) */
+  candle(ctx,i,o){
+    const c=ctx.c, a=ctx.atr[i], first=o.first??i;
+    let hi=-Infinity, lo=Infinity; for(let k=first;k<=i;k++){ hi=Math.max(hi,c[k].h); lo=Math.min(lo,c[k].l); }
+    const reasons=[...o.reasons]; let score=o.base+(o.quality||0);
+    if(o.tr) reasons.push(CX.trendText(o.tr));
+    const avg=ctx.volAvg[i];
+    if(avg){
+      const vr=c[i].v/avg; reasons.push(`volume ${U.n(vr,1)}× rata-rata ${CFG.VOL_LEN} candle`);
+      if(vr>=CFG.VOL_VERY_HIGH) score+=15; else if(vr>=CFG.VOL_HIGH) score+=10; else if(vr<CFG.VOL_LOW) score-=5;
+    }
+    if(ctx.sr && ctx.sr.levels.length && o.dir!==0){
+      const ref= o.dir>0?lo:hi, lv=CX.nearest(ctx.sr.levels,ref);
+      if(lv && Math.abs(lv.price-ref)<=CFG.SR_NEAR_ATR*a){
+        score+=12; reasons.push(`di dekat ${o.dir>0?'support':'resistance'} ${U.p(lv.price)} (${lv.touches}× sentuhan pivot, jarak ${U.n(Math.abs(lv.price-ref)/a,2)}× ATR)`);
+      }
+    }
+    const r=ctx.rsi[i];
+    if(r!=null){
+      if(o.dir>0 && r<=CFG.RSI_OS+5){ score+=8; reasons.push(`RSI ${U.n(r,1)} (dekat/di area oversold)`); }
+      else if(o.dir<0 && r>=CFG.RSI_OB-5){ score+=8; reasons.push(`RSI ${U.n(r,1)} (dekat/di area overbought)`); }
+      else reasons.push(`RSI ${U.n(r,1)}`);
+    }
+    const last=c[i]; let confirm, invalid;
+    if(o.dir>0){
+      confirm = o.kind==='continuation' ? `candle berikutnya bertahan di atas titik tengah body ${U.p((last.o+last.c)/2)}` : `candle berikutnya close di atas ${U.p(last.h)}`;
+      invalid = `close di bawah ${U.p(lo)} (low pola)`;
+    } else if(o.dir<0){
+      confirm = o.kind==='continuation' ? `candle berikutnya bertahan di bawah titik tengah body ${U.p((last.o+last.c)/2)}` : `candle berikutnya close di bawah ${U.p(last.l)}`;
+      invalid = `close di atas ${U.p(hi)} (high pola)`;
+    } else {
+      confirm = `tunggu arah: close di atas ${U.p(hi)} → bullish, di bawah ${U.p(lo)} → bearish`;
+      invalid = `tidak ada; pola netral sampai salah satu level ditembus`;
+    }
+    return {name:o.name,dir:o.dir,kind:o.kind,i,t:c[i].t,score:Math.round(U.clamp(score,0,100)),reasons,confirm,invalid};
+  },
+
+  /* Bias = Σ(arah × skor × bobot) / Σ(skor × bobot) × 100, rentang −100..+100.
+     Pola candle dikalikan AGE_DECAY^umur. > +15 bullish, < −15 bearish, sisanya netral. */
+  bias(res){
+    const sig=[], n=res.ctx.n;
+    const push=(label,dir,score,w)=>{ if(dir && score>0) sig.push({label,dir,score,w,eff:score*w}); };
+    push(`Tren EMA ${res.trend.label}`,res.trend.dir,res.trend.strength,CFG.W_TREND);
+    push(`Struktur ${res.struct.label}`,res.struct.dir,res.struct.score||0,CFG.W_STRUCT);
+    push(res.rsi.label,res.rsi.dir,res.rsi.score||0,CFG.W_MOMENTUM);
+    push(res.macd.label,res.macd.dir,res.macd.score||0,CFG.W_MOMENTUM);
+    res.div.forEach(d=>push(d.name,d.dir,d.score,CFG.W_DIV));
+    res.candles.forEach(p=>{ const age=n-1-p.i; push(`${p.name} (${age===0?'candle terakhir':age+' candle lalu'})`,p.dir,p.score,CFG.W_CANDLE*CFG.AGE_DECAY**age); });
+    res.charts.forEach(p=>push(`${p.name} – ${p.status}`,p.dir,p.score,CFG.W_CHART));
+    const tot=sig.reduce((s,x)=>s+x.eff,0);
+    const val= tot ? sig.reduce((s,x)=>s+x.dir*x.eff,0)/tot*100 : 0;
+    const dir= val>CFG.BIAS_THRESHOLD?1 : val<-CFG.BIAS_THRESHOLD?-1 : 0;
+    const sorted=[...sig].sort((x,y)=>y.eff-x.eff);
+    const main= dir!==0 ? sorted.filter(x=>x.dir===dir).slice(0,4) : sorted.slice(0,4);
+    const conflicts= dir!==0
+      ? sorted.filter(x=>x.dir===-dir && x.eff>=CFG.CONFLICT_MIN)
+      : (sorted.some(x=>x.dir>0)&&sorted.some(x=>x.dir<0) ? sorted.filter(x=>x.eff>=CFG.CONFLICT_MIN) : []);
+    return {val,dir,main,conflicts,count:sig.length};
+  },
+};
+
+/* =====================================================================
+   MODUL 10: ENGINE — menghubungkan data, analisis, dan UI
+   ===================================================================== */
+const Engine = {
+  onKline(k){
+    const cd={t:k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c,v:+k.v,closed:!!k.x};
+    const arr=S.candles, last=arr[arr.length-1];
+    let closedNow=false;
+    if(!last || cd.t>last.t){
+      if(last && !last.closed){ last.closed=true; closedNow=true; }
+      arr.push(cd); if(arr.length>CFG.MAX_CANDLES) arr.shift();
+    } else if(cd.t===last.t){
+      const was=last.closed; Object.assign(last,cd); if(cd.closed && !was) closedNow=true;
+    } else return;
+    S.lastMsgAt=Date.now();
+    if(closedNow) Engine.runFull(); else Engine.runLive(false);
+  },
+
+  runFull(){
+    const closed=S.candles.filter(x=>x.closed);
+    if(closed.length<CFG.MIN_CANDLES){ UI.renderMessage('Data belum cukup',`Baru ada ${closed.length} candle close; analisis butuh minimal ${CFG.MIN_CANDLES}. Pilih timeframe lebih kecil atau tunggu data bertambah.`); return; }
+    S.dec=U.priceDec(closed[closed.length-1].c);
+    const ctx=buildCtx(closed); ctx.sr=CX.sr(ctx);
+    const res={ctx, trend:CX.trend(ctx), struct:CX.structure(ctx), rsi:CX.rsiInfo(ctx), macd:CX.macdInfo(ctx),
+      vol:CX.volInfo(ctx), atr:CX.atrInfo(ctx), div:CX.divergence(ctx), candles:[], charts:CH.detect(ctx)};
+    for(let i=Math.max(0,ctx.n-CFG.CANDLE_SCAN);i<ctx.n;i++) res.candles.push(...CP.detect(ctx,i));
+    res.candles.sort((x,y)=>y.i-x.i||y.score-x.score);
+    res.bias=SC.bias(res);
+    S.ctx=ctx; S.result=res; S.lastAnalysisAt=Date.now();
+    UI.renderAnalysis(res);
+    Engine.runLive(true);
+  },
+
+  // pola sementara: deteksi di candle yang masih berjalan (bisa berubah sampai close)
+  runLive(force){
+    if(S.mode!=='on' || !S.ctx) return;
+    const now=Date.now();
+    if(!force && now-S.lastLiveAt<CFG.LIVE_THROTTLE_MS){
+      if(!S.liveTimer) S.liveTimer=setTimeout(()=>{ S.liveTimer=null; Engine.runLive(true); }, CFG.LIVE_THROTTLE_MS);
+      return;
+    }
+    S.lastLiveAt=now;
+    const all=S.candles, last=all[all.length-1]; let pats=[];
+    if(last && !last.closed){ const cl=buildCtx(all); cl.sr=S.ctx.sr; pats=CP.detect(cl,cl.n-1); }
+    UI.renderLive(last,pats);
+  },
+};
+
+/* =====================================================================
+   MODUL 11: CHART TradingView
+   ===================================================================== */
+const Chart = {
+  load(){
+    return new Promise(res=>{
+      if(window.TradingView) return res(true);
+      const s=document.createElement('script');
+      s.src='https://s3.tradingview.com/tv.js'; s.async=true;
+      s.onload=()=>res(!!window.TradingView); s.onerror=()=>res(false);
+      document.head.appendChild(s);
+    });
+  },
+  async render(symbol,tf){
+    const box=document.getElementById('tvChart'), my=S.session;
+    box.innerHTML='<div class="chart-msg">Memuat chart…</div>';
+    const ok=await S.tvReady;
+    if(my!==S.session) return;
+    if(!ok){ box.innerHTML='<div class="chart-msg">Widget TradingView tidak bisa dimuat. Periksa koneksi internet atau pemblokir skrip, lalu muat ulang halaman.</div>'; return; }
+    box.innerHTML='<div id="tvInner" style="height:100%"></div>';
+    let tz='Etc/UTC'; try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||tz; }catch(_){}
+    new TradingView.widget({
+      container_id:'tvInner', autosize:true, symbol, interval:TF[tf].tv, timezone:tz,
+      theme:'dark', style:'1', locale:'id', toolbar_bg:'#0c151e',
+      enable_publishing:false, allow_symbol_change:false, withdateranges:true, hide_side_toolbar:false, save_image:false,
+    });
+  },
+};
+
+/* =====================================================================
+   MODUL 12: UI
+   ===================================================================== */
+const UI = {
+  el:{},
+  init(){
+    UI.el={sym:document.getElementById('symInput'),btn:document.getElementById('symBtn'),tf:document.getElementById('tfBar'),
+      dot:document.getElementById('stDot'),st:document.getElementById('stText'),upd:document.getElementById('updText'),panel:document.getElementById('panel')};
+    UI.el.tf.innerHTML=Object.keys(TF).map(k=>`<button type="button" data-tf="${k}" class="${k===S.tf?'on':''}" aria-pressed="${k===S.tf}">${k}</button>`).join('');
+    UI.el.tf.addEventListener('click',e=>{
+      const b=e.target.closest('button[data-tf]'); if(!b || b.dataset.tf===S.tf) return;
+      S.tf=b.dataset.tf;
+      UI.el.tf.querySelectorAll('button').forEach(x=>{ const on=x.dataset.tf===S.tf; x.classList.toggle('on',on); x.setAttribute('aria-pressed',on); });
+      App.apply();
+    });
+    UI.el.btn.addEventListener('click',App.apply);
+    UI.el.sym.addEventListener('keydown',e=>{ if(e.key==='Enter') App.apply(); });
+  },
+  status(state,text){ UI.el.dot.className='dot '+state; UI.el.st.textContent=text; },
+  tick(){
+    if(S.mode==='on'){
+      const ago=S.lastMsgAt?Math.round((Date.now()-S.lastMsgAt)/1000):null;
+      UI.el.upd.textContent=`Data ${U.clock(S.lastMsgAt)}${ago!=null?` (${ago} dtk lalu)`:''} · Analisis ${U.clock(S.lastAnalysisAt)}`;
+      const cd=document.getElementById('cdown'), last=S.candles[S.candles.length-1];
+      if(cd && last){
+        const left=Math.max(0,last.t+TF[S.tf].ms-Date.now()), s=Math.floor(left/1000);
+        const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60), sec=s%60, z=v=>String(v).padStart(2,'0');
+        cd.textContent= d>0 ? `${d}h ${z(h)}:${z(m)}:${z(sec)}` : h>0 ? `${z(h)}:${z(m)}:${z(sec)}` : `${z(m)}:${z(sec)}`;
+      }
+    } else UI.el.upd.textContent=`Update: ${U.clock(Date.now())}`;
+  },
+
+  disclaimer:'<div class="disc">Bukan saran keuangan. Deteksi pola berbasis aturan dan probabilitas, bukan prediksi pasti. Selalu kelola risiko sendiri.</div>',
+
+  renderMessage(title,body){
+    UI.el.panel.innerHTML=`<div class="msg"><h2>${U.esc(title)}</h2><p class="note">${body}</p></div>${UI.disclaimer}`;
+  },
+  renderNonCrypto(ps){
+    UI.renderMessage('Analisis otomatis tidak tersedia',
+      `<b class="mono">${U.esc(ps.raw)}</b> bukan pasangan kripto Binance. Chart tetap realtime di kiri, tetapi analisis otomatis hanya tersedia untuk pasangan kripto Binance karena data candle widget TradingView tidak bisa dibaca kode. Contoh simbol yang bisa dianalisis: <span class="mono">BINANCE:BTCUSDT</span>, <span class="mono">BINANCE:ETHUSDT</span>.`);
+  },
+  renderNotOnBinance(ps){
+    UI.renderMessage('Pasangan tidak ditemukan di Binance',
+      `Simbol yang dicoba: <span class="mono">${ps.cands.map(U.esc).join(', ')}</span>. Chart tetap tampil, tetapi analisis otomatis hanya untuk pasangan spot yang terdaftar di Binance.`);
+  },
+  renderLoading(raw){ UI.renderMessage('Memuat data…',`Mengambil histori candle untuk <span class="mono">${U.esc(raw)}</span> dari Binance.`); },
+  renderError(msg){ UI.renderMessage('Data gagal dimuat',`${U.esc(msg)}. Kedua host Binance tidak merespons; halaman akan mencoba lagi otomatis. Bila terus gagal, periksa koneksi atau apakah Binance diblokir di jaringan Anda.`); },
+
+  patCard(p,opt={}){
+    const cls=p.dir>0?'bull':p.dir<0?'bear':'neut', lbl=p.dir>0?'BULLISH':p.dir<0?'BEARISH':'NETRAL';
+    return `<details class="pat ${cls}"${opt.open?' open':''}>
+      <summary>${opt.live?'<span class="tag tmp">SEMENTARA</span>':''}<span class="tag">${lbl}</span><span class="pname">${U.esc(p.name)}</span><span class="pscore">${p.score}/100</span></summary>
+      <div class="pbody">
+        <div class="pmeta">${opt.live?'Candle berjalan, open ':'Candle '}${U.esc(U.time(p.t))}${p.status?' – '+U.esc(p.status):''}</div>
+        <div class="bar"><i style="width:${p.score}%"></i></div>
+        <ul>${p.reasons.map(r=>`<li>${U.esc(r)}</li>`).join('')}</ul>
+        <div class="lv"><b>Konfirmasi</b> ${U.esc(p.confirm)}</div>
+        <div class="lv"><b>Invalidasi</b> ${U.esc(p.invalid)}</div>
+      </div></details>`;
+  },
+
+  renderAnalysis(res){
+    const b=res.bias, cls=b.dir>0?'up':b.dir<0?'dn':'neu', word=b.dir>0?'Bullish':b.dir<0?'Bearish':'Netral';
+    const pos=U.clamp((b.val+100)/2,0,100), sr=res.ctx.sr, t=res.trend, ps=S.parsed;
+    const srList=(arr)=> arr.length ? arr.map(l=>`${U.p(l.price)} <span class="muted">(${l.touches}×)</span>`).join('<br>') : '<span class="muted">tidak ada pivot</span>';
+    const dirCls=d=>d>0?'up':d<0?'dn':'neu';
+    const srcNote = (ps.ex && ps.ex!=='BINANCE') || ps.tk!==S.binSym
+      ? `<p class="note">Chart: <span class="mono">${U.esc(S.raw)}</span>. Analisis memakai data spot Binance <span class="mono">${U.esc(S.binSym)}</span>, harga bisa sedikit berbeda.</p>` : '';
+
+    UI.el.panel.innerHTML=`
+    <div class="sec">
+      <h2>Ringkasan <small>${U.esc(S.binSym)} · ${S.tf} · candle close</small></h2>
+      <div class="bias"><span class="lbl ${cls}">${word}</span><span class="val ${cls}">${b.val>=0?'+':''}${U.n(b.val,0)}</span></div>
+      <div class="meter" role="img" aria-label="Skor bias ${U.n(b.val,0)} dari -100 sampai +100"><i style="left:${pos}%"></i></div>
+      <div class="meter-scale"><span>−100 bearish</span><span>0</span><span>bullish +100</span></div>
+      <dl class="kv">
+        <dt>Sinyal dihitung</dt><dd>${b.count}</dd>
+        <dt>Support terdekat</dt><dd class="up">${sr.sup[0]?U.p(sr.sup[0].price):'–'}</dd>
+        <dt>Resistance terdekat</dt><dd class="dn">${sr.res[0]?U.p(sr.res[0].price):'–'}</dd>
+      </dl>
+      <h2 style="margin-top:12px">Alasan utama</h2>
+      ${b.main.length?`<ul class="list">${b.main.map(s=>`<li><span class="${dirCls(s.dir)}">${s.dir>0?'▲':'▼'}</span> ${U.esc(s.label)} <span class="muted mono">(${U.n(s.eff,0)})</span></li>`).join('')}</ul>`:'<div class="empty">Belum ada sinyal berarah.</div>'}
+      <h2 style="margin-top:12px">Sinyal bertentangan</h2>
+      ${b.conflicts.length?`<ul class="list">${b.conflicts.map(s=>`<li><span class="${dirCls(s.dir)}">${s.dir>0?'▲':'▼'}</span> ${U.esc(s.label)} <span class="muted mono">(${U.n(s.eff,0)})</span></li>`).join('')}</ul>`:'<div class="empty">Tidak ada sinyal kuat yang berlawanan.</div>'}
+      ${srcNote}
+    </div>
+    <div class="sec" id="liveBox"></div>
+    <div class="sec">
+      <h2>Pola candlestick <small>${CFG.CANDLE_SCAN} candle close terakhir</small></h2>
+      ${res.candles.length?res.candles.map((p,k)=>UI.patCard(p,{open:k<2})).join(''):'<div class="empty">Tidak ada pola yang memenuhi ambang.</div>'}
+    </div>
+    <div class="sec">
+      <h2>Pola chart <small>pivot ±${CFG.PIVOT_LEN} candle, ${CFG.CHART_LOOKBACK} candle terakhir</small></h2>
+      ${res.charts.length?res.charts.map((p,k)=>UI.patCard(p,{open:k<1})).join(''):'<div class="empty">Tidak ada pola chart yang memenuhi ambang.</div>'}
+    </div>
+    <div class="sec">
+      <h2>Konteks indikator</h2>
+      <table class="ctx">
+        <tr><td>Tren EMA</td><td><span class="${dirCls(t.dir)}">${U.esc(t.label)}</span><br><span class="mono">harga ${U.p(t.px)} · EMA20 ${U.p(t.e20)} · EMA50 ${U.p(t.e50)} · EMA200 ${U.p(t.e200)}</span></td></tr>
+        <tr><td>Struktur</td><td><span class="${dirCls(res.struct.dir)}">${U.esc(res.struct.label)}</span><br><span class="mono">${U.esc(res.struct.text)}</span></td></tr>
+        <tr><td>RSI(14)</td><td class="${dirCls(res.rsi.dir)}">${U.esc(res.rsi.label)}</td></tr>
+        <tr><td>MACD</td><td><span class="${dirCls(res.macd.dir)}">${U.esc(res.macd.label)}</span>${res.macd.line!=null?`<br><span class="mono">MACD ${U.n(res.macd.line,S.dec+2)} · signal ${U.n(res.macd.signal,S.dec+2)}</span>`:''}</td></tr>
+        <tr><td>Volume</td><td>${U.esc(res.vol.label)}</td></tr>
+        <tr><td>ATR(14)</td><td class="mono">${U.p(res.atr.v)} (${U.pct(res.atr.pct,2)} dari harga)</td></tr>
+      </table>
+      <div class="sr"><div><h3>Support</h3>${srList(sr.sup)}</div><div><h3>Resistance</h3>${srList(sr.res)}</div></div>
+      <h2 style="margin-top:12px">Divergensi RSI <small>baru terlihat ${CFG.PIVOT_LEN} candle setelah pivot</small></h2>
+      ${res.div.length?res.div.map(d=>UI.patCard(d)).join(''):'<div class="empty">Tidak ada divergensi reguler terbaru.</div>'}
+    </div>
+    ${UI.disclaimer}`;
+  },
+
+  renderLive(last,pats){
+    const box=document.getElementById('liveBox'); if(!box||!last) return;
+    const prev=S.ctx.c[S.ctx.n-1], live=!last.closed;
+    const chg= prev && live ? (last.c-prev.c)/prev.c : 0;
+    box.innerHTML=`
+      <h2>Candle berjalan <small>close dalam <span id="cdown" class="mono">–</span></small></h2>
+      <div class="live-px"><span class="px ${chg>=0?'up':'dn'}">${U.p(last.c)}</span><span class="mono ${chg>=0?'up':'dn'}">${chg>=0?'+':''}${U.pct(chg,2)}</span><span class="note">vs close candle sebelumnya</span></div>
+      <div class="ohlc">O ${U.p(last.o)} · H ${U.p(last.h)} · L ${U.p(last.l)} · Vol ${U.n(last.v,2)}</div>
+      <h2 style="margin-top:10px">Pola sementara <small>bisa berubah sampai candle close, tidak dihitung ke bias</small></h2>
+      ${pats.length?pats.map(p=>UI.patCard(p,{live:true})).join(''):'<div class="empty">Belum ada pola di candle berjalan.</div>'}`;
+    UI.tick();
+  },
+};
+
+/* =====================================================================
+   MODUL 13: APLIKASI — input simbol & timeframe mengendalikan chart + analisis
+   ===================================================================== */
+const App = {
+  apply(){
+    const raw=(UI.el.sym.value||'').trim().toUpperCase().replace(/\s+/g,'');
+    if(!raw){ UI.el.sym.focus(); return; }
+    UI.el.sym.value=raw;
+    const my=++S.session;
+    Feed.stop(); clearTimeout(S.reloadTimer); clearTimeout(S.liveTimer); S.liveTimer=null;
+    Object.assign(S,{raw,candles:[],ctx:null,result:null,binSym:null,lastMsgAt:0,lastAnalysisAt:0});
+    Chart.render(raw,S.tf);
+    const ps=Sym.parse(raw); S.parsed=ps;
+    if(!ps.crypto){ S.mode='off'; UI.renderNonCrypto(ps); UI.status('idle','Analisis nonaktif (bukan kripto Binance)'); return; }
+    S.mode='loading'; UI.renderLoading(raw);
+    App.load(my,ps);
+  },
+  async load(my,ps){
+    UI.status('connecting','Memuat histori candle…');
+    try{
+      const r=await Feed.resolve(ps.cands,TF[S.tf].bn);
+      if(my!==S.session) return;
+      S.binSym=r.sym; S.candles=r.candles; S.mode='on'; S.lastMsgAt=Date.now();
+      Engine.runFull();
+      Feed.connect(my);
+    }catch(e){
+      if(my!==S.session) return;
+      if(e.invalidSymbol){ S.mode='off'; UI.renderNotOnBinance(ps); UI.status('idle','Pasangan tidak ada di Binance'); return; }
+      S.mode='error'; UI.renderError(e.message||'Kesalahan jaringan');
+      UI.status('error',`Gagal memuat data, coba lagi dalam ${CFG.RELOAD_MS/1000} dtk`);
+      S.reloadTimer=setTimeout(()=>{ if(my===S.session) App.load(my,ps); }, CFG.RELOAD_MS);
+    }
+  },
+};
+
+/* ---------- start ---------- */
+UI.init();
+S.tvReady=Chart.load();
+App.apply();
+setInterval(UI.tick,1000);
+window.addEventListener('offline',()=>{ if(S.mode==='on') UI.status('error','Perangkat offline, menunggu koneksi…'); });
+window.addEventListener('online',()=>{
+  if(S.mode==='on' && (!Feed.ws || Feed.ws.readyState>1)){ clearTimeout(Feed.timer); clearInterval(Feed.countdown); Feed.retry=Math.max(Feed.retry,1); Feed.connect(S.session); }
+  else if(S.mode==='error'){ clearTimeout(S.reloadTimer); App.load(S.session,S.parsed); }
+});
+</script>
+</body>
+</html>
